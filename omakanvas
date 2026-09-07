@@ -111,6 +111,13 @@ def visibility_path() -> Path:
     return config_home / "omakanvas" / "hidden-courses.json"
 
 
+def data_path() -> Path:
+    data_home = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    if not data_home.is_absolute():
+        data_home = Path.home() / ".local/share"
+    return data_home / "omakanvas" / "latest.json"
+
+
 def shell_config_path() -> Path:
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return config_home / "omarchy" / "shell.json"
@@ -263,6 +270,11 @@ def set_course_hidden(
         courses.pop(course_key, None)
         if not courses:
             instances.pop(instance_url, None)
+    write_private_json(path, data)
+
+
+def write_private_json(path: Path, data: dict[str, Any]) -> None:
+    """Publish a complete owner-readable snapshot without exposing partial JSON."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     serialized = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -929,8 +941,12 @@ def assignment_schedules(
     return schedules
 
 
+def plain_text(value: Any) -> str:
+    return sanitize_text(re.sub(r"<[^<>]*>", " ", str(value or "")))
+
+
 def plain_text_excerpt(value: Any, limit: int = ANNOUNCEMENT_EXCERPT_LENGTH) -> str:
-    text = sanitize_text(re.sub(r"<[^<>]*>", " ", str(value or "")))
+    text = plain_text(value)
     if len(text) > limit:
         text = text[: max(0, limit - 1)].rstrip() + "…"
     return text
@@ -969,6 +985,7 @@ def collect_announcements(
                 "posted_at": posted.isoformat() if posted is not None else None,
                 "author": author_name or None,
                 "excerpt": plain_text_excerpt(topic.get("message")),
+                "body": plain_text(topic.get("message")),
                 "html_url": validated_canvas_web_url(
                     client.base_url, topic.get("html_url"),
                 ),
@@ -1025,6 +1042,7 @@ def collect_discussions(
                 "pinned": topic.get("pinned") is True,
                 "locked": topic.get("locked") is True,
                 "excerpt": plain_text_excerpt(topic.get("message")),
+                "body": plain_text(topic.get("message")),
                 "html_url": validated_canvas_web_url(
                     client.base_url, topic.get("html_url"),
                 ),
@@ -1080,6 +1098,7 @@ def collect_conversations(
                 "unread": record.get("workflow_state") == "unread",
                 "last_message_at": sent_at.isoformat() if sent_at is not None else None,
                 "last_message": plain_text_excerpt(record.get("last_message")),
+                "last_message_body": plain_text(record.get("last_message")),
                 "message_count": message_count,
                 "starred": record.get("starred") is True,
                 "participants": participants,
@@ -1223,6 +1242,7 @@ def collect(
             roles[role] = empty_role_payload(str(error))
     return {
         "schema_version": PAYLOAD_VERSION,
+        "base_url": normalize_instance_url(client.base_url),
         "fetched_at": now.isoformat(),
         "days": days,
         "roles": roles,
@@ -1277,7 +1297,7 @@ def main() -> int:
         "command",
         choices=[
             "fetch", "login", "clear-session", "set-token", "clear-token",
-            "hide-course", "unhide-course",
+            "hide-course", "unhide-course", "data-path",
         ],
     )
     parser.add_argument("course_id", nargs="?")
@@ -1310,6 +1330,9 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
+        if args.command == "data-path":
+            print(data_path())
+            return 0
         base_url = resolve_base_url(args.base_url)
         if args.command == "set-token":
             if args.token_stdin:
@@ -1375,6 +1398,7 @@ def main() -> int:
         )
         hidden_ids = set(hidden_courses_for(base_url))
         data = collect(client, max(1, args.days), hidden_course_ids=hidden_ids)
+        write_private_json(data_path(), data)
         if args.as_json:
             print(json.dumps(data, indent=2, ensure_ascii=False))
         else:
