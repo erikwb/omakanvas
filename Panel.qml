@@ -21,7 +21,7 @@ Panel {
   readonly property string baseUrl: String(setting("baseUrl", "")).trim()
   readonly property string configurationMessage: "Set your Canvas URL with omarchy bar set, then run the helper's login command or save an API token."
   readonly property int days: boundedSetting("days", 14, 1, 60)
-  readonly property int refreshSec: boundedSetting("refreshIntervalSec", 21600, 300, 86400)
+  readonly property int refreshSec: boundedSetting("refreshIntervalSec", 3600, 300, 86400)
 
   readonly property var paneNames: ["Overview", "Assignments", "Courses"]
   property int selectedPane: 0
@@ -45,8 +45,7 @@ Panel {
   property string pendingToken: ""
   readonly property bool needsSetup: root.baseUrl === ""
     || (root.authError && root.errorText !== "")
-  readonly property bool showSkeletons: root.loading
-    && String(payload.fetched_at || "") === "" && root.errorText === ""
+  readonly property bool showSkeletons: root.loading && root.errorText === ""
   property bool refreshAfterStatus: false
   property var pendingVisibilityCourse: null
   property bool pendingHiddenState: false
@@ -714,8 +713,8 @@ Panel {
 
               NumberAnimation on opacity {
                 from: 1.0
-                to: 0.35
-                duration: 800
+                to: 0.3
+                duration: 650
                 easing.type: Easing.InOutQuad
                 loops: Animation.Infinite
                 running: root.showSkeletons
@@ -961,14 +960,14 @@ Panel {
                   width: (skeletonPane.width - 2 * skeletonChips.spacing) / 3
                   height: Style.font.caption + Style.space(10)
                   radius: Style.cornerRadius
-                  color: root.alpha(root.foreground, 0.14)
+                  color: root.alpha(root.foreground, 0.22)
 
                   SequentialAnimation on opacity {
                     running: root.showSkeletons
                     loops: Animation.Infinite
                     PauseAnimation { duration: index * 180 }
-                    NumberAnimation { from: 0.35; to: 0.9; duration: 700; easing.type: Easing.InOutQuad }
-                    NumberAnimation { from: 0.9; to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
+                    NumberAnimation { from: 0.3; to: 1.0; duration: 650; easing.type: Easing.InOutQuad }
+                    NumberAnimation { from: 1.0; to: 0.3; duration: 650; easing.type: Easing.InOutQuad }
                   }
                 }
               }
@@ -982,14 +981,14 @@ Panel {
                 width: skeletonPane.width * modelData
                 height: Style.font.body + Style.space(8)
                 radius: Style.cornerRadius
-                color: root.alpha(root.foreground, 0.14)
+                color: root.alpha(root.foreground, 0.22)
 
                 SequentialAnimation on opacity {
                   running: root.showSkeletons
                   loops: Animation.Infinite
                   PauseAnimation { duration: 200 + index * 180 }
-                  NumberAnimation { from: 0.35; to: 0.9; duration: 700; easing.type: Easing.InOutQuad }
-                  NumberAnimation { from: 0.9; to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
+                  NumberAnimation { from: 0.3; to: 1.0; duration: 650; easing.type: Easing.InOutQuad }
+                  NumberAnimation { from: 1.0; to: 0.3; duration: 650; easing.type: Easing.InOutQuad }
                 }
               }
             }

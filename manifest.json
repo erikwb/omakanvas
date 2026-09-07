@@ -19,7 +19,7 @@
     "defaults": {
       "baseUrl": "",
       "days": 14,
-      "refreshIntervalSec": 21600
+      "refreshIntervalSec": 3600
     },
     "schema": [
       {
@@ -45,7 +45,7 @@
         "min": 300,
         "max": 86400,
         "step": 900,
-        "defaultValue": 21600
+        "defaultValue": 3600
       }
     ]
   }
