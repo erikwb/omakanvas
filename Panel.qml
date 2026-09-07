@@ -641,6 +641,16 @@ Panel {
       }
       else root.toggle()
     }
+
+    NumberAnimation on textRotation {
+      from: 0
+      to: 360
+      duration: 1200
+      loops: Animation.Infinite
+      easing.type: Easing.Linear
+      running: root.loading || root.loggingIn
+      onRunningChanged: if (!running) button.textRotation = 0
+    }
   }
 
   KeyboardPanel {
