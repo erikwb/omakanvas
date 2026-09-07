@@ -45,7 +45,6 @@ Panel {
   property string pendingToken: ""
   readonly property bool needsSetup: root.baseUrl === ""
     || (root.authError && root.errorText !== "")
-  readonly property bool showSkeletons: root.loading && root.errorText === ""
   property bool refreshAfterStatus: false
   property var pendingVisibilityCourse: null
   property bool pendingHiddenState: false
@@ -622,11 +621,52 @@ Panel {
     function nextPane(): string { root.selectPane(root.selectedPane + 1); return root.paneNames[root.selectedPane] }
   }
 
+  Component {
+    id: busySkeleton
+    Item {
+      anchors.fill: parent
+
+      Column {
+        anchors.centerIn: parent
+        spacing: 3
+
+        Repeater {
+          model: [16, 12, 14]
+          Rectangle {
+            required property real modelData
+            required property int index
+            width: modelData
+            height: 3
+            radius: 1.5
+            color: root.alpha(root.foreground, 0.25)
+
+            Rectangle {
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              width: 0
+              height: parent.height
+              radius: parent.radius
+              color: root.foreground
+
+              SequentialAnimation on width {
+                loops: Animation.Infinite
+                PauseAnimation { duration: index * 280 }
+                NumberAnimation { from: 0; to: modelData; duration: 420; easing.type: Easing.InOutQuad }
+                PauseAnimation { duration: (2 - index) * 280 + 240 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   BarIconButton {
     id: button
     anchors.fill: parent
     bar: root.bar
     text: "\uf0ae"
+    iconComponent: (root.loading || root.loggingIn) ? busySkeleton : null
     active: root.errorText !== "" || root.roleError !== "" || root.urgentCount > 0
     tooltipText: root.errorText !== ""
       ? "Omakanvas — " + root.displayError()
@@ -710,16 +750,6 @@ Panel {
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.display
-
-              NumberAnimation on opacity {
-                from: 1.0
-                to: 0.3
-                duration: 650
-                easing.type: Easing.InOutQuad
-                loops: Animation.Infinite
-                running: root.showSkeletons
-                onRunningChanged: if (!running) heroIcon.opacity = 1
-              }
             }
 
             Column {
@@ -943,61 +973,8 @@ Panel {
           }
 
           Column {
-            id: skeletonPane
-            visible: root.showSkeletons
-            width: parent.width
-            spacing: Style.space(12)
-
-            Row {
-              id: skeletonChips
-              width: parent.width
-              spacing: Style.space(8)
-
-              Repeater {
-                model: 3
-                Rectangle {
-                  required property int index
-                  width: (skeletonPane.width - 2 * skeletonChips.spacing) / 3
-                  height: Style.font.caption + Style.space(10)
-                  radius: Style.cornerRadius
-                  color: root.alpha(root.foreground, 0.22)
-
-                  SequentialAnimation on opacity {
-                    running: root.showSkeletons
-                    loops: Animation.Infinite
-                    PauseAnimation { duration: index * 180 }
-                    NumberAnimation { from: 0.3; to: 1.0; duration: 650; easing.type: Easing.InOutQuad }
-                    NumberAnimation { from: 1.0; to: 0.3; duration: 650; easing.type: Easing.InOutQuad }
-                  }
-                }
-              }
-            }
-
-            Repeater {
-              model: [0.92, 0.7, 0.85, 0.6]
-              Rectangle {
-                required property real modelData
-                required property int index
-                width: skeletonPane.width * modelData
-                height: Style.font.body + Style.space(8)
-                radius: Style.cornerRadius
-                color: root.alpha(root.foreground, 0.22)
-
-                SequentialAnimation on opacity {
-                  running: root.showSkeletons
-                  loops: Animation.Infinite
-                  PauseAnimation { duration: 200 + index * 180 }
-                  NumberAnimation { from: 0.3; to: 1.0; duration: 650; easing.type: Easing.InOutQuad }
-                  NumberAnimation { from: 1.0; to: 0.3; duration: 650; easing.type: Easing.InOutQuad }
-                }
-              }
-            }
-          }
-
-          Column {
             id: overviewPane
             visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 0
-              && !root.showSkeletons
             width: parent.width
             spacing: Style.space(12)
 
@@ -1118,7 +1095,6 @@ Panel {
           Column {
             id: assignmentsPane
             visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 1
-              && !root.showSkeletons
             width: parent.width
             spacing: Style.space(9)
 
@@ -1229,7 +1205,6 @@ Panel {
           Column {
             id: coursesPane
             visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 2
-              && !root.showSkeletons
             width: parent.width
             spacing: Style.space(10)
 
