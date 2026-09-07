@@ -10,6 +10,8 @@ Migrating from Omacanvas? Remove the old widget, add Omakanvas, and set the
 same `baseUrl`. Saved browser sessions, tokens, and hidden-course preferences
 carry over automatically.
 
+Recent changes were hella vibed by Muse Spark 1.3.
+
 Omakanvas is a native Omarchy Quickshell bar widget for Canvas LMS. It shows
 current grades and assignments due soon for students, plus upcoming assignment
 deadlines and grading counts for teachers. Accounts with both roles can switch
