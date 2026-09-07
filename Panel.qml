@@ -7,8 +7,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "io.github.christopherhaynes33.omacanvas"
-  ipcTarget: "io.github.christopherhaynes33.omacanvas"
+  moduleName: "io.github.erikwb.omakanvas"
+  ipcTarget: "io.github.erikwb.omakanvas"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -19,7 +19,7 @@ Panel {
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
   readonly property string helperPath: pluginDir + "/omacanvas"
   readonly property string baseUrl: String(setting("baseUrl", "")).trim()
-  readonly property string configurationMessage: "Set your Canvas URL in Setup › Plugins › Omacanvas, then save an API token for that URL."
+  readonly property string configurationMessage: "Set your Canvas URL with omarchy bar set, then run the helper's login command or save an API token."
   readonly property int days: boundedSetting("days", 14, 1, 60)
   readonly property int refreshSec: boundedSetting("refreshIntervalSec", 21600, 300, 86400)
 
@@ -29,7 +29,7 @@ Panel {
   property bool cursorActive: false
   property string selectedCourseId: ""
   property var payload: ({
-    schema_version: 2,
+    schema_version: 5,
     fetched_at: "",
     days: 14,
     roles: {
@@ -40,6 +40,8 @@ Panel {
   property string errorText: ""
   property string visibilityError: ""
   property bool loading: false
+  property bool loggingIn: false
+  property bool authError: false
   property bool refreshAfterStatus: false
   property var pendingVisibilityCourse: null
   property bool pendingHiddenState: false
@@ -69,6 +71,22 @@ Panel {
     filterAssignments(selectedCourseAssignments, false)
   readonly property var selectedCourseSubmittedAssignments:
     filterAssignments(selectedCourseAssignments, true)
+  readonly property var selectedCourseAnnouncements: selectedCourse
+    ? (selectedCourse.announcements || []) : []
+  // The payload keeps every announcement and conversation for external
+  // tools; the panel shows only a recent subset (RECENT_ITEM_LIMIT in sync).
+  readonly property var selectedCourseRecentAnnouncements:
+    selectedCourseAnnouncements.slice(0, 3)
+  readonly property var selectedCourseConversations: selectedCourse
+    ? (selectedCourse.conversations || []) : []
+  readonly property var selectedCourseUnreadConversations:
+    selectedCourseConversations.filter(function(item) { return !!item.unread })
+  readonly property var selectedCourseRecentUnreadConversations:
+    selectedCourseUnreadConversations.slice(0, 3)
+  readonly property var selectedCourseDiscussions: selectedCourse
+    ? (selectedCourse.discussions || []) : []
+  readonly property var selectedCourseRecentDiscussions:
+    selectedCourseDiscussions.slice(0, 3)
   readonly property var nextAssignment: teaching
     ? (assignments.length > 0 ? assignments[0] : null)
     : (openAssignments.length > 0 ? openAssignments[0] : null)
@@ -220,7 +238,25 @@ Panel {
     }
     loading = true
     errorText = ""
+    authError = false
     statusProc.running = true
+  }
+
+  function startLogin() {
+    if (loginProc.running || loggingIn) return
+    if (baseUrl === "") {
+      errorText = configurationMessage
+      return
+    }
+    loggingIn = true
+    errorText = ""
+    authError = false
+    loginProc.running = true
+  }
+
+  function cancelLogin() {
+    if (loginProc.running) loginProc.running = false
+    loggingIn = false
   }
 
   function grade(course) {
@@ -248,6 +284,51 @@ Panel {
     if (teaching && assignment.published !== null && assignment.published !== undefined)
       parts.push(assignment.published ? "Published" : "Draft")
     return parts.filter(function(part) { return part !== "" }).join(" · ")
+  }
+
+  function announcementSubtitle(announcement) {
+    if (!announcement) return ""
+    var parts = []
+    var posted = new Date(announcement.posted_at || "").getTime()
+    parts.push(isFinite(posted)
+      ? "Posted " + dueLabel(announcement.posted_at)
+      : "No posted date")
+    var author = String(announcement.author || "").trim()
+    if (author !== "") parts.push(author)
+    return parts.join(" · ")
+  }
+
+  function conversationSubtitle(conversation) {
+    if (!conversation) return ""
+    var parts = []
+    var names = []
+    var participants = conversation.participants || []
+    for (var i = 0; i < participants.length && i < 3; i++) {
+      var name = String(participants[i].name || "").trim()
+      if (name !== "") names.push(name)
+    }
+    if (names.length > 0) parts.push(names.join(", "))
+    var sent = new Date(conversation.last_message_at || "").getTime()
+    parts.push(isFinite(sent) ? dueLabel(conversation.last_message_at) : "No date")
+    if (Number(conversation.message_count) > 1)
+      parts.push(Number(conversation.message_count) + " messages")
+    if (conversation.starred) parts.push("Starred")
+    return parts.join(" · ")
+  }
+
+  function discussionSubtitle(discussion) {
+    if (!discussion) return ""
+    var parts = []
+    var active = new Date(discussion.last_activity_at || "").getTime()
+    parts.push(isFinite(active)
+      ? "Active " + dueLabel(discussion.last_activity_at)
+      : "No activity date")
+    var author = String(discussion.author || "").trim()
+    if (author !== "") parts.push(author)
+    var replies = Number(discussion.reply_count) || 0
+    parts.push(replies + (replies === 1 ? " reply" : " replies"))
+    if (discussion.pinned) parts.push("Pinned")
+    return parts.join(" · ")
   }
 
   function assignmentLocked(assignment) {
@@ -365,16 +446,18 @@ Panel {
         var message = String(statusError.text || "").trim()
         root.errorText = message !== "" ? message.replace(/^omacanvas:\s*/, "")
                                             : "Canvas could not be refreshed."
+        root.authError = /credential|log ?in|session|api token|canvas_api_key|rejected|expired/i.test(message)
         return
       }
       try {
         var nextPayload = JSON.parse(String(statusOutput.text || ""))
-        if (Number(nextPayload.schema_version) !== 2 || !nextPayload.roles)
-          throw new Error("Unsupported Omacanvas data format")
+        if (Number(nextPayload.schema_version) !== 5 || !nextPayload.roles)
+          throw new Error("Unsupported Omakanvas data format")
         root.payload = nextPayload
         root.ensureSelectedRole()
         root.ensureSelectedCourse()
         root.errorText = ""
+        root.authError = false
       } catch (error) {
         root.errorText = "Canvas returned data the bar could not read."
       }
@@ -403,6 +486,28 @@ Panel {
     }
   }
 
+  Process {
+    id: loginProc
+    command: [root.helperPath, "login"]
+    environment: ({ "CANVAS_BASE_URL": root.baseUrl })
+    stderr: StdioCollector { id: loginErrorOutput; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.loggingIn = false
+      if (exitCode !== 0) {
+        var message = String(loginErrorOutput.text || "").trim()
+        if (/cancel/i.test(message)) return
+        root.errorText = message !== "" ? message.replace(/^omacanvas:\s*/, "")
+                                        : "Canvas sign-in did not complete."
+        root.authError = true
+        return
+      }
+      root.errorText = ""
+      root.authError = false
+      if (!statusProc.running) root.refreshNow()
+      else root.refreshAfterStatus = true
+    }
+  }
+
   Timer {
     interval: root.refreshSec * 1000
     running: root.baseUrl !== ""
@@ -426,7 +531,7 @@ Panel {
   }
 
   IpcHandler {
-    target: "io.github.christopherhaynes33.omacanvas"
+    target: "io.github.erikwb.omakanvas"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
@@ -441,9 +546,9 @@ Panel {
     text: "\uf0ae"
     active: root.errorText !== "" || root.roleError !== "" || root.urgentCount > 0
     tooltipText: root.errorText !== ""
-      ? "Omacanvas — " + root.errorText
-      : (root.roleError !== "" ? "Omacanvas — " + root.roleError
-      : "Omacanvas — " + (root.teaching ? "Teaching · " : "Student · ")
+      ? "Omakanvas — " + root.errorText
+      : (root.roleError !== "" ? "Omakanvas — " + root.roleError
+      : "Omakanvas — " + (root.teaching ? "Teaching · " : "Student · ")
         + root.pendingCount + " assignment" + (root.pendingCount === 1 ? "" : "s")
         + " due · right-click to refresh")
     onPressed: function(buttonCode) {
@@ -477,6 +582,7 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
         if (text === "r" || text === "R") root.refreshNow()
+        else if (text === "l" || text === "L") root.startLogin()
         else if (text === "s" || text === "S") root.selectRole("student")
         else if (text === "t" || text === "T") root.selectRole("teacher")
         else if (text === "1") root.selectPane(0)
@@ -534,7 +640,7 @@ Panel {
                   id: heroTitle
                   anchors.left: parent.left
                   anchors.verticalCenter: parent.verticalCenter
-                  text: "Omacanvas"
+                  text: "Omakanvas"
                   color: root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
@@ -621,6 +727,41 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             wrapMode: Text.WordWrap
+          }
+
+          Button {
+            visible: root.authError && root.errorText !== "" && !root.loggingIn
+            width: parent.width
+            text: "Sign in with Canvas"
+            iconText: "\uf090"
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.startLogin()
+          }
+
+          Text {
+            visible: root.loggingIn
+            width: parent.width
+            text: "A browser window has been opened for Canvas sign-in. "
+              + "Complete the login there; this will continue automatically."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+            wrapMode: Text.WordWrap
+          }
+
+          Button {
+            visible: root.loggingIn
+            width: parent.width
+            text: "Cancel sign-in"
+            bordered: false
+            leftAlign: true
+            foreground: root.dim
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: root.cancelLogin()
           }
 
           Text {
@@ -1115,6 +1256,180 @@ Panel {
               }
             }
 
+            PanelSectionHeader {
+              visible: !!root.selectedCourse
+              text: "RECENT ANNOUNCEMENTS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              topPadding: Math.ceil(fontSize * 0.15) + Style.space(4)
+            }
+
+            Text {
+              visible: !!root.selectedCourse && root.selectedCourseRecentAnnouncements.length === 0
+              width: parent.width
+              text: "No recent announcements."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+
+            Repeater {
+              model: root.selectedCourseRecentAnnouncements
+              Column {
+                required property var modelData
+                required property int index
+                width: coursesPane.width
+                spacing: Style.space(4)
+
+                AssignmentLinkRow {
+                  width: parent.width
+                  title: String(modelData.title || "Untitled announcement")
+                  subtitle: root.announcementSubtitle(modelData)
+                  submitted: false
+                  showSubmissionStatus: false
+                  locked: false
+                  linkAvailable: root.canvasItemUrl(modelData) !== ""
+                  foreground: root.foreground
+                  muted: root.dim
+                  accent: root.urgent
+                  fontFamily: root.fontFamily
+                  onActivated: root.openAssignment(modelData)
+                }
+                Text {
+                  visible: String(modelData.excerpt || "") !== ""
+                  width: parent.width
+                  text: String(modelData.excerpt || "")
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                  maximumLineCount: 3
+                  elide: Text.ElideRight
+                }
+                PanelSeparator {
+                  visible: index < root.selectedCourseRecentAnnouncements.length - 1
+                  width: parent.width
+                  foreground: root.foreground
+                  opacity: 0.18
+                }
+              }
+            }
+
+            PanelSectionHeader {
+              visible: !!root.selectedCourse
+                && root.selectedCourseUnreadConversations.length > 0
+              text: "MESSAGES · " + root.selectedCourseUnreadConversations.length + " UNREAD"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              topPadding: Math.ceil(fontSize * 0.15) + Style.space(4)
+            }
+
+            Repeater {
+              model: root.selectedCourseRecentUnreadConversations
+              Column {
+                required property var modelData
+                required property int index
+                width: coursesPane.width
+                spacing: Style.space(4)
+
+                AssignmentLinkRow {
+                  width: parent.width
+                  title: String(modelData.subject || "No subject")
+                  subtitle: root.conversationSubtitle(modelData)
+                  submitted: false
+                  showSubmissionStatus: false
+                  locked: false
+                  linkAvailable: root.canvasItemUrl(modelData) !== ""
+                  foreground: root.foreground
+                  muted: root.dim
+                  accent: root.urgent
+                  fontFamily: root.fontFamily
+                  onActivated: root.openAssignment(modelData)
+                }
+                Text {
+                  visible: String(modelData.last_message || "") !== ""
+                  width: parent.width
+                  text: String(modelData.last_message || "")
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                  maximumLineCount: 3
+                  elide: Text.ElideRight
+                }
+                PanelSeparator {
+                  visible: index < root.selectedCourseRecentUnreadConversations.length - 1
+                  width: parent.width
+                  foreground: root.foreground
+                  opacity: 0.18
+                }
+              }
+            }
+
+            PanelSectionHeader {
+              visible: !!root.selectedCourse
+              text: "DISCUSSIONS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              topPadding: Math.ceil(fontSize * 0.15) + Style.space(4)
+            }
+
+            Text {
+              visible: !!root.selectedCourse && root.selectedCourseRecentDiscussions.length === 0
+              width: parent.width
+              text: "No recent discussions."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.WordWrap
+            }
+
+            Repeater {
+              model: root.selectedCourseRecentDiscussions
+              Column {
+                required property var modelData
+                required property int index
+                width: coursesPane.width
+                spacing: Style.space(4)
+
+                AssignmentLinkRow {
+                  width: parent.width
+                  title: String(modelData.title || "Untitled discussion")
+                  subtitle: root.discussionSubtitle(modelData)
+                  submitted: false
+                  showSubmissionStatus: false
+                  locked: !!modelData.locked
+                  linkAvailable: root.canvasItemUrl(modelData) !== ""
+                  foreground: root.foreground
+                  muted: root.dim
+                  accent: root.urgent
+                  fontFamily: root.fontFamily
+                  onActivated: root.openAssignment(modelData)
+                }
+                Text {
+                  visible: String(modelData.excerpt || "") !== ""
+                  width: parent.width
+                  text: String(modelData.excerpt || "")
+                  textFormat: Text.PlainText
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                  maximumLineCount: 3
+                  elide: Text.ElideRight
+                }
+                PanelSeparator {
+                  visible: index < root.selectedCourseRecentDiscussions.length - 1
+                  width: parent.width
+                  foreground: root.foreground
+                  opacity: 0.18
+                }
+              }
+            }
+
             Button {
               visible: root.hiddenCourses.length > 0
               width: parent.width
@@ -1134,7 +1449,7 @@ Panel {
             Text {
               visible: root.hiddenCoursesExpanded && root.hiddenCourses.length > 0
               width: parent.width
-              text: "Hidden courses are excluded from assignments, counts, alerts, and assignment API requests."
+              text: "Hidden courses are excluded from assignments, announcements, discussions, messages, counts, alerts, and assignment API requests."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -1211,7 +1526,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: "Right-click or press R to refresh · ←/→ changes views"
+            text: "Right-click or press R to refresh · L to sign in · ←/→ changes views"
               + (root.showRoleSwitch ? " · S/T changes role" : "")
             color: root.dim
             font.family: root.fontFamily

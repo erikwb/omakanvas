@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Omacanvas data helper for the native Omarchy bar plugin."""
+"""Omakanvas data helper for the native Omarchy bar plugin."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,9 @@ import getpass
 import json
 import os
 import re
+import select
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -16,20 +18,37 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
+PLUGIN_ID = "io.github.erikwb.omakanvas"
 SERVICE = "omacanvas"
-PAYLOAD_VERSION = 2
+BROWSER_SESSION_SERVICE = "omacanvas-browser-session"
+BROWSER_SESSION_VERSION = 1
+PAYLOAD_VERSION = 5
 VISIBILITY_VERSION = 1
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_DEVTOOLS_MESSAGE_BYTES = 8 * 1024 * 1024
 MAX_PAGES = 200
 MAX_RECORDS = 20_000
 MAX_FETCH_SECONDS = 180
 REQUEST_TIMEOUT_SECONDS = 20
+DEFAULT_LOGIN_TIMEOUT_SECONDS = 300
+BROWSER_CANDIDATES = (
+    "chromium",
+    "chromium-browser",
+    "google-chrome-stable",
+    "google-chrome",
+    "brave-browser",
+    "microsoft-edge-stable",
+    "vivaldi-stable",
+)
+RECENT_ITEM_LIMIT = 3
+ANNOUNCEMENT_EXCERPT_LENGTH = 180
+MAX_CONVERSATION_PARTICIPANTS = 10
 
 
 class CrossOriginRequestError(RuntimeError):
@@ -37,11 +56,22 @@ class CrossOriginRequestError(RuntimeError):
 
 
 class CanvasAuthenticationError(RuntimeError):
-    """Raised when Canvas rejects the configured API token."""
+    """Raised when Canvas rejects the configured credential."""
 
 
 class CanvasPermissionError(RuntimeError):
-    """Raised when a valid token cannot access a Canvas resource."""
+    """Raised when a valid credential cannot access a Canvas resource."""
+
+
+class BrowserSession(NamedTuple):
+    base_url: str
+    value: str
+
+
+class CanvasCredential(NamedTuple):
+    kind: str
+    secret: str
+    base_url: str
 
 
 def _url_origin(url: str) -> tuple[str, str, int]:
@@ -79,6 +109,54 @@ class SameOriginRedirectHandler(HTTPRedirectHandler):
 def visibility_path() -> Path:
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return config_home / "omacanvas" / "hidden-courses.json"
+
+
+def shell_config_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_home / "omarchy" / "shell.json"
+
+
+def configured_canvas_base_url(path: Path | None = None) -> str | None:
+    path = path or shell_config_path()
+    if not path.exists():
+        return None
+    try:
+        if path.stat().st_size > 2 * 1024 * 1024:
+            raise RuntimeError("Omarchy shell configuration exceeded the size limit")
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"Could not read Omarchy's shell configuration: {error}") from error
+    if not isinstance(data, dict):
+        return None
+    bar = data.get("bar")
+    layout = bar.get("layout") if isinstance(bar, dict) else None
+    if not isinstance(layout, dict):
+        return None
+    for section in ("left", "center", "right"):
+        widgets = layout.get(section)
+        if not isinstance(widgets, list):
+            continue
+        for widget in widgets:
+            if not isinstance(widget, dict) or widget.get("id") != PLUGIN_ID:
+                continue
+            value = widget.get("baseUrl")
+            if isinstance(value, str) and value.strip():
+                return normalize_instance_url(value)
+    return None
+
+
+def resolve_base_url(value: str = "", config_path: Path | None = None) -> str:
+    explicit = value or os.environ.get("CANVAS_BASE_URL", "")
+    if explicit:
+        return normalize_instance_url(explicit)
+    configured = configured_canvas_base_url(config_path)
+    if configured:
+        return configured
+    raise RuntimeError(
+        "No Canvas URL was provided and Omakanvas has no configured baseUrl. "
+        f"Set it with 'omarchy bar set {PLUGIN_ID} baseUrl https://canvas.example.edu' "
+        "or pass --base-url"
+    )
 
 
 def normalize_instance_url(base_url: str) -> str:
@@ -243,7 +321,7 @@ def save_token(base_url: str, token: str) -> None:
     hostname = urlparse(instance_url).netloc
     try:
         subprocess.run(
-            [secret_tool, "store", f"--label=Omacanvas API token ({hostname})",
+            [secret_tool, "store", f"--label=Omakanvas API token ({hostname})",
              "service", SERVICE, "base_url", instance_url],
             input=token + "\n", text=True, check=True,
         )
@@ -265,15 +343,454 @@ def clear_token(base_url: str) -> None:
         raise RuntimeError(f"Could not remove the Canvas token from the system keyring: {error}") from error
 
 
+def _validate_browser_session(value: str) -> str:
+    session = value.strip()
+    if (
+        not session
+        or len(session) > 16_384
+        or ";" in session
+        or any(ord(character) < 0x20 or ord(character) == 0x7f for character in session)
+    ):
+        raise RuntimeError("The saved Canvas browser session is invalid")
+    return session
+
+
+def _decode_browser_session(value: str, fallback_base_url: str) -> BrowserSession:
+    try:
+        record = json.loads(value)
+    except json.JSONDecodeError:
+        record = None
+    if isinstance(record, dict):
+        if record.get("version") != BROWSER_SESSION_VERSION:
+            raise RuntimeError("The saved Canvas browser session uses an unsupported format")
+        stored_base_url = record.get("base_url")
+        stored_session = record.get("canvas_session")
+        if not isinstance(stored_base_url, str) or not isinstance(stored_session, str):
+            raise RuntimeError("The saved Canvas browser session is invalid")
+        return BrowserSession(
+            normalize_instance_url(stored_base_url),
+            _validate_browser_session(stored_session),
+        )
+    return BrowserSession(
+        normalize_instance_url(fallback_base_url),
+        _validate_browser_session(value),
+    )
+
+
+def _keyring_browser_session(base_url: str) -> BrowserSession | None:
+    secret_tool = secret_tool_path()
+    if not secret_tool:
+        return None
+    instance_url = normalize_instance_url(base_url)
+    try:
+        result = subprocess.run(
+            [secret_tool, "lookup", "service", BROWSER_SESSION_SERVICE,
+             "base_url", instance_url],
+            check=False, capture_output=True, text=True, timeout=5,
+        )
+        session = result.stdout.strip()
+        return _decode_browser_session(session, instance_url) if session else None
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"Could not read the Canvas browser session from the system keyring: {error}"
+        ) from error
+
+
+def save_browser_session(
+    base_url: str,
+    session: str,
+    session_base_url: str | None = None,
+) -> None:
+    secret_tool = secret_tool_path()
+    if not secret_tool:
+        raise RuntimeError("secret-tool is required to save a browser session; install libsecret")
+    instance_url = normalize_instance_url(base_url)
+    session = _validate_browser_session(session)
+    effective_base_url = normalize_instance_url(session_base_url or instance_url)
+    hostname = urlparse(effective_base_url).netloc
+    stored_session = json.dumps({
+        "version": BROWSER_SESSION_VERSION,
+        "base_url": effective_base_url,
+        "canvas_session": session,
+    }, separators=(",", ":"), sort_keys=True)
+    try:
+        subprocess.run(
+            [secret_tool, "store", f"--label=Omakanvas browser session ({hostname})",
+             "service", BROWSER_SESSION_SERVICE, "base_url", instance_url],
+            input=stored_session + "\n", text=True, check=True,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"Could not save the Canvas browser session in the system keyring: {error}"
+        ) from error
+
+
+def clear_browser_session(base_url: str) -> None:
+    secret_tool = secret_tool_path()
+    if not secret_tool:
+        raise RuntimeError("secret-tool is required to remove a saved browser session")
+    instance_url = normalize_instance_url(base_url)
+    try:
+        subprocess.run(
+            [secret_tool, "clear", "service", BROWSER_SESSION_SERVICE,
+             "base_url", instance_url],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"Could not remove the Canvas browser session from the system keyring: {error}"
+        ) from error
+
+
+def get_credential(
+    base_url: str,
+    token_from_environment: bool = False,
+) -> CanvasCredential | None:
+    instance_url = normalize_instance_url(base_url)
+    if token_from_environment:
+        token = get_token(base_url, token_from_environment=True)
+        return CanvasCredential("token", token, instance_url) if token else None
+    session = _keyring_browser_session(base_url)
+    if session:
+        return CanvasCredential("browser_session", session.value, session.base_url)
+    token = get_token(base_url)
+    return CanvasCredential("token", token, instance_url) if token else None
+
+
 def secret_tool_path() -> str | None:
     located = shutil.which("secret-tool")
     return str(Path(located).resolve()) if located else None
 
 
+def browser_path(requested: str = "") -> str:
+    if requested:
+        located = shutil.which(requested)
+        if not located and os.path.sep in requested:
+            candidate = Path(requested).expanduser()
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                located = str(candidate)
+        if not located:
+            raise RuntimeError(f"Could not find the requested browser: {requested}")
+        return str(Path(located).resolve())
+    for candidate in BROWSER_CANDIDATES:
+        located = shutil.which(candidate)
+        if located:
+            return str(Path(located).resolve())
+    raise RuntimeError(
+        "Browser login requires Chromium, Chrome, Brave, Edge, or Vivaldi; "
+        "install one or pass --browser"
+    )
+
+
+class DevToolsPipe:
+    """Minimal client for Chromium's process-private DevTools pipe."""
+
+    def __init__(self, read_fd: int, write_fd: int):
+        self.read_fd = read_fd
+        self.write_fd = write_fd
+        self.buffer = b""
+        self.next_id = 1
+
+    def _send_message(self, payload: bytes) -> None:
+        if len(payload) > MAX_DEVTOOLS_MESSAGE_BYTES:
+            raise RuntimeError("DevTools message exceeded the size limit")
+        data = payload + b"\0"
+        while data:
+            written = os.write(self.write_fd, data)
+            if written <= 0:
+                raise RuntimeError("Browser closed the DevTools connection")
+            data = data[written:]
+
+    def _receive_message(self) -> str:
+        deadline = time.monotonic() + 15
+        while b"\0" not in self.buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Browser did not respond to the DevTools request")
+            ready, _writeable, _exceptional = select.select(
+                [self.read_fd], [], [], remaining,
+            )
+            if not ready:
+                raise RuntimeError("Browser did not respond to the DevTools request")
+            chunk = os.read(self.read_fd, 64 * 1024)
+            if not chunk:
+                raise RuntimeError("Browser closed the DevTools connection")
+            self.buffer += chunk
+            if len(self.buffer) > MAX_DEVTOOLS_MESSAGE_BYTES:
+                raise RuntimeError("DevTools message exceeded the size limit")
+        payload, self.buffer = self.buffer.split(b"\0", 1)
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise RuntimeError("Browser returned invalid DevTools data") from error
+
+    def command(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        command_id = self.next_id
+        self.next_id += 1
+        message: dict[str, Any] = {"id": command_id, "method": method}
+        if params is not None:
+            message["params"] = params
+        if session_id is not None:
+            message["sessionId"] = session_id
+        self._send_message(json.dumps(message, separators=(",", ":")).encode("utf-8"))
+        while True:
+            try:
+                response = json.loads(self._receive_message())
+            except json.JSONDecodeError as error:
+                raise RuntimeError("Browser returned invalid DevTools JSON") from error
+            if not isinstance(response, dict) or response.get("id") != command_id:
+                continue
+            if "error" in response:
+                raise RuntimeError("Browser could not provide its Canvas session")
+            result = response.get("result", {})
+            if not isinstance(result, dict):
+                raise RuntimeError("Browser returned an invalid DevTools result")
+            return result
+
+    def close(self) -> None:
+        for attribute in ("write_fd", "read_fd"):
+            descriptor = getattr(self, attribute, -1)
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                setattr(self, attribute, -1)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+
+def _start_browser(
+    executable: str,
+    profile: Path,
+    instance_url: str,
+) -> tuple[subprocess.Popen, DevToolsPipe]:
+    command_read, parent_write = os.pipe()
+    parent_read, command_write = os.pipe()
+
+    def configure_devtools_pipe() -> None:
+        os.dup2(command_read, 3)
+        os.dup2(command_write, 4)
+        if command_read not in {3, 4}:
+            os.close(command_read)
+        if command_write not in {3, 4}:
+            os.close(command_write)
+
+    descriptors = {command_read, parent_write, parent_read, command_write}
+    try:
+        process = subprocess.Popen(
+            [
+                executable,
+                f"--user-data-dir={profile}",
+                "--remote-debugging-pipe",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--new-window",
+                f"{instance_url}/login",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            pass_fds=tuple({command_read, command_write, 3, 4}),
+            preexec_fn=configure_devtools_pipe,
+        )
+    except BaseException:
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+    os.close(command_read)
+    os.close(command_write)
+    return process, DevToolsPipe(parent_read, parent_write)
+
+
+def _browser_target_origins(targets: Any, initial_base_url: str) -> list[str]:
+    origins = [normalize_instance_url(initial_base_url)]
+    if not isinstance(targets, list):
+        return origins
+    for target in targets:
+        if not isinstance(target, dict) or target.get("type") != "page":
+            continue
+        value = target.get("url")
+        if not isinstance(value, str):
+            continue
+        parsed = urlparse(value)
+        if parsed.scheme.lower() != "https" or not parsed.netloc:
+            continue
+        try:
+            origin = normalize_instance_url(f"https://{parsed.netloc}")
+        except RuntimeError:
+            continue
+        if origin not in origins:
+            origins.append(origin)
+    return origins
+
+
+def _canvas_session_from_cookies(
+    cookies: Any,
+    base_url: str,
+    now: float | None = None,
+) -> str | None:
+    if not isinstance(cookies, list):
+        return None
+    host = urlparse(normalize_instance_url(base_url)).hostname
+    if not host:
+        return None
+    now = time.time() if now is None else now
+    matches = []
+    for cookie in cookies:
+        if not isinstance(cookie, dict) or cookie.get("name") != "canvas_session":
+            continue
+        domain = str(cookie.get("domain", "")).lstrip(".").lower()
+        path = str(cookie.get("path", "/"))
+        expires = cookie.get("expires", -1)
+        domain_matches = host == domain or host.endswith(f".{domain}")
+        path_matches = path == "/" or "/api/v1/users/self".startswith(path.rstrip("/") + "/")
+        if (
+            not domain
+            or not domain_matches
+            or not path_matches
+            or cookie.get("secure") is not True
+            or isinstance(expires, (int, float)) and expires > 0 and expires <= now
+        ):
+            continue
+        try:
+            value = _validate_browser_session(str(cookie.get("value", "")))
+        except RuntimeError:
+            continue
+        matches.append((host == domain, len(domain), len(path), value))
+    if not matches:
+        return None
+    matches.sort(reverse=True)
+    return matches[0][3]
+
+
+def _browser_session_is_authenticated(base_url: str, session: str) -> bool:
+    try:
+        user = CanvasClient(base_url, browser_session=session).get_object("api/v1/users/self")
+    except RuntimeError:
+        return False
+    user_id = user.get("id")
+    return isinstance(user_id, (int, str)) and not isinstance(user_id, bool) and str(user_id) != ""
+
+
+def _stop_browser(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
+def _cancel_browser_login(_signum: int, _frame: Any) -> None:
+    raise RuntimeError("Canvas browser login was cancelled")
+
+
+def browser_login(
+    base_url: str,
+    requested_browser: str = "",
+    timeout: int = DEFAULT_LOGIN_TIMEOUT_SECONDS,
+) -> BrowserSession:
+    if not 30 <= timeout <= 900:
+        raise RuntimeError("Browser login timeout must be between 30 and 900 seconds")
+    instance_url = normalize_instance_url(base_url)
+    executable = browser_path(requested_browser)
+    deadline = time.monotonic() + timeout
+    with tempfile.TemporaryDirectory(prefix="omacanvas-browser-") as directory:
+        profile = Path(directory)
+        os.chmod(profile, 0o700)
+        process, connection = _start_browser(executable, profile, instance_url)
+        previous_sigterm = signal.signal(signal.SIGTERM, _cancel_browser_login)
+        try:
+            last_validations: dict[str, tuple[str, float]] = {}
+            with connection:
+                targets = connection.command("Target.getTargets").get("targetInfos", [])
+                target_id = next(
+                    (
+                        target.get("targetId") for target in targets
+                        if isinstance(target, dict) and target.get("type") == "page"
+                    ),
+                    None,
+                )
+                if not isinstance(target_id, str) or not target_id:
+                    raise RuntimeError("Browser did not create a Canvas login page")
+                attached = connection.command(
+                    "Target.attachToTarget", {"targetId": target_id, "flatten": True},
+                )
+                session_id = attached.get("sessionId")
+                if not isinstance(session_id, str) or not session_id:
+                    raise RuntimeError("Browser could not inspect the Canvas login page")
+                while time.monotonic() < deadline:
+                    if process.poll() is not None:
+                        raise RuntimeError("The browser closed before Canvas login completed")
+                    target_infos = connection.command(
+                        "Target.getTargets"
+                    ).get("targetInfos", [])
+                    for candidate_base_url in _browser_target_origins(
+                        target_infos, instance_url,
+                    ):
+                        result = connection.command(
+                            "Network.getCookies",
+                            {"urls": [candidate_base_url]},
+                            session_id,
+                        )
+                        candidate = _canvas_session_from_cookies(
+                            result.get("cookies"), candidate_base_url,
+                        )
+                        if not candidate:
+                            continue
+                        current_time = time.monotonic()
+                        previous = last_validations.get(candidate_base_url)
+                        if previous and candidate == previous[0] and current_time - previous[1] < 2:
+                            continue
+                        last_validations[candidate_base_url] = candidate, current_time
+                        if _browser_session_is_authenticated(candidate_base_url, candidate):
+                            return BrowserSession(candidate_base_url, candidate)
+                    time.sleep(0.5)
+            raise RuntimeError("Canvas browser login timed out")
+        finally:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+            connection.close()
+            _stop_browser(process)
+
+
 class CanvasClient:
-    def __init__(self, base_url: str, token: str, opener=None, clock=None):
+    def __init__(
+        self,
+        base_url: str,
+        token: str | None = None,
+        opener=None,
+        clock=None,
+        *,
+        browser_session: str | None = None,
+        login_base_url: str | None = None,
+    ):
+        if bool(token) == bool(browser_session):
+            raise RuntimeError("Exactly one Canvas credential is required")
         self.base_url = normalize_instance_url(base_url) + "/"
-        self.token = token
+        self.login_base_url = normalize_instance_url(login_base_url or base_url)
+        if browser_session:
+            self.auth_kind = "browser_session"
+            self.auth_headers = {
+                "Cookie": f"canvas_session={_validate_browser_session(browser_session)}",
+            }
+        else:
+            self.auth_kind = "token"
+            self.auth_headers = {"Authorization": f"Bearer {token}"}
         self.opener = opener or build_opener(SameOriginRedirectHandler(self.base_url))
         self.clock = clock or time.monotonic
         self.deadline = self.clock() + MAX_FETCH_SECONDS
@@ -283,6 +800,48 @@ class CanvasClient:
         if remaining <= 0:
             raise RuntimeError("Canvas refresh exceeded the allowed duration")
         return min(REQUEST_TIMEOUT_SECONDS, remaining)
+
+    def _authentication_error(self) -> CanvasAuthenticationError:
+        if self.auth_kind == "browser_session":
+            return CanvasAuthenticationError(
+                "Canvas rejected the browser session; run "
+                f"'omacanvas login --base-url {self.login_base_url}' again"
+            )
+        return CanvasAuthenticationError("Canvas rejected the API token")
+
+    def _get_json(self, url: str) -> tuple[Any, Any]:
+        _require_same_origin(self.base_url, url)
+        headers = {"Accept": "application/json", **self.auth_headers}
+        request = Request(url, headers=headers)
+        try:
+            with self.opener.open(request, timeout=self._request_timeout()) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(raw) > MAX_RESPONSE_BYTES:
+                    raise RuntimeError("Canvas API response exceeded the size limit")
+                try:
+                    payload = json.loads(raw.decode("utf-8"))
+                except json.JSONDecodeError as error:
+                    if self.auth_kind == "browser_session":
+                        raise self._authentication_error() from error
+                    raise RuntimeError("Canvas API returned invalid JSON") from error
+                return payload, response.headers
+        except HTTPError as error:
+            if error.code == 401:
+                raise self._authentication_error() from error
+            if error.code == 403:
+                raise CanvasPermissionError(
+                    "Canvas denied access to data for this role"
+                ) from error
+            raise RuntimeError(f"Canvas API returned HTTP {error.code}") from error
+        except (URLError, TimeoutError, UnicodeDecodeError) as error:
+            raise RuntimeError(f"Could not reach Canvas: {error}") from error
+
+    def get_object(self, path: str) -> dict[str, Any]:
+        url = urljoin(self.base_url, path.lstrip("/"))
+        payload, _headers = self._get_json(url)
+        if not isinstance(payload, dict):
+            raise RuntimeError("Canvas API returned an unexpected response format")
+        return payload
 
     def get_all(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         url = urljoin(self.base_url, path.lstrip("/"))
@@ -297,30 +856,14 @@ class CanvasClient:
             if len(visited) >= MAX_PAGES:
                 raise RuntimeError("Canvas pagination exceeded the page limit")
             visited.add(url)
-            request = Request(url, headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"})
-            try:
-                with self.opener.open(request, timeout=self._request_timeout()) as response:
-                    raw = response.read(MAX_RESPONSE_BYTES + 1)
-                    if len(raw) > MAX_RESPONSE_BYTES:
-                        raise RuntimeError("Canvas API response exceeded the size limit")
-                    page = json.loads(raw.decode("utf-8"))
-                    if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
-                        raise RuntimeError("Canvas API returned an unexpected response format")
-                    if len(records) + len(page) > MAX_RECORDS:
-                        raise RuntimeError("Canvas API response exceeded the record limit")
-                    records.extend(page)
-                    next_link = _next_link(response.headers.get("Link"))
-                    url = _require_same_origin(self.base_url, urljoin(url, next_link)) if next_link else None
-            except HTTPError as error:
-                if error.code == 401:
-                    raise CanvasAuthenticationError("Canvas rejected the API token") from error
-                if error.code == 403:
-                    raise CanvasPermissionError(
-                        "Canvas denied access to data for this role"
-                    ) from error
-                raise RuntimeError(f"Canvas API returned HTTP {error.code}") from error
-            except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
-                raise RuntimeError(f"Could not reach Canvas: {error}") from error
+            page, headers = self._get_json(url)
+            if not isinstance(page, list) or not all(isinstance(item, dict) for item in page):
+                raise RuntimeError("Canvas API returned an unexpected response format")
+            if len(records) + len(page) > MAX_RECORDS:
+                raise RuntimeError("Canvas API response exceeded the record limit")
+            records.extend(page)
+            next_link = _next_link(headers.get("Link"))
+            url = _require_same_origin(self.base_url, urljoin(url, next_link)) if next_link else None
         return records
 
 
@@ -382,6 +925,168 @@ def assignment_schedules(
         item["due_at"], item["unlock_at"] or "", item["title"] or "",
     ))
     return schedules
+
+
+def plain_text_excerpt(value: Any, limit: int = ANNOUNCEMENT_EXCERPT_LENGTH) -> str:
+    text = sanitize_text(re.sub(r"<[^<>]*>", " ", str(value or "")))
+    if len(text) > limit:
+        text = text[: max(0, limit - 1)].rstrip() + "…"
+    return text
+
+
+def collect_announcements(
+    client: CanvasClient,
+    course_id: Any,
+) -> list[dict[str, Any]]:
+    """Return every announcement for a course, newest first.
+
+    The full list is kept in the payload so external tools can process it;
+    the panel displays only a recent subset.
+    """
+    try:
+        topics = client.get_all(
+            f"api/v1/courses/{course_id}/discussion_topics",
+            {"only_announcements": "true", "per_page": 100},
+        )
+    except CanvasPermissionError:
+        return []
+    scored: list[tuple[datetime, dict[str, Any]]] = []
+    for topic in topics:
+        if not isinstance(topic, dict):
+            continue
+        posted = parse_time(topic.get("posted_at")) or parse_time(topic.get("created_at"))
+        author = topic.get("author")
+        author_name = sanitize_text(
+            author.get("display_name") if isinstance(author, dict) else None
+        )
+        scored.append((
+            posted or datetime.min.replace(tzinfo=timezone.utc),
+            {
+                "id": topic.get("id"),
+                "title": sanitize_text(topic.get("title"), "Untitled announcement"),
+                "posted_at": posted.isoformat() if posted is not None else None,
+                "author": author_name or None,
+                "excerpt": plain_text_excerpt(topic.get("message")),
+                "html_url": validated_canvas_web_url(
+                    client.base_url, topic.get("html_url"),
+                ),
+            },
+        ))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [item for _, item in scored]
+
+
+def collect_discussions(
+    client: CanvasClient,
+    course_id: Any,
+) -> list[dict[str, Any]]:
+    """Return every discussion topic for a course, most active first.
+
+    Announcements are excluded by the API when only_announcements is absent.
+    The full list is kept in the payload so external tools can process it;
+    the panel displays only a recent subset.
+    """
+    try:
+        topics = client.get_all(
+            f"api/v1/courses/{course_id}/discussion_topics",
+            {"order_by": "recent_activity", "per_page": 100},
+        )
+    except CanvasPermissionError:
+        return []
+    scored: list[tuple[datetime, dict[str, Any]]] = []
+    for topic in topics:
+        if not isinstance(topic, dict):
+            continue
+        activity = (
+            parse_time(topic.get("last_reply_at"))
+            or parse_time(topic.get("posted_at"))
+            or parse_time(topic.get("created_at"))
+        )
+        posted = parse_time(topic.get("posted_at")) or parse_time(topic.get("created_at"))
+        author = topic.get("author")
+        if isinstance(author, dict):
+            author_name = sanitize_text(author.get("display_name"))
+        else:
+            author_name = sanitize_text(topic.get("user_name"))
+        reply_count = topic.get("discussion_subentry_count")
+        if not isinstance(reply_count, int) or isinstance(reply_count, bool):
+            reply_count = 0
+        scored.append((
+            activity or datetime.min.replace(tzinfo=timezone.utc),
+            {
+                "id": topic.get("id"),
+                "title": sanitize_text(topic.get("title"), "Untitled discussion"),
+                "posted_at": posted.isoformat() if posted is not None else None,
+                "last_activity_at": activity.isoformat() if activity is not None else None,
+                "author": author_name or None,
+                "reply_count": reply_count,
+                "pinned": topic.get("pinned") is True,
+                "locked": topic.get("locked") is True,
+                "excerpt": plain_text_excerpt(topic.get("message")),
+                "html_url": validated_canvas_web_url(
+                    client.base_url, topic.get("html_url"),
+                ),
+            },
+        ))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [item for _, item in scored]
+
+
+def collect_conversations(
+    client: CanvasClient,
+    course_id: Any,
+) -> list[dict[str, Any]]:
+    """Return every conversation for a course, newest first.
+
+    The full list is kept in the payload so external tools can process it;
+    the panel displays only unread conversations.
+    """
+    try:
+        records = client.get_all(
+            "api/v1/conversations",
+            {"filter": f"course_{course_id}", "per_page": 100},
+        )
+    except CanvasPermissionError:
+        return []
+    inbox_url = validated_canvas_web_url(client.base_url, "/conversations")
+    scored: list[tuple[datetime, dict[str, Any]]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        sent_at = parse_time(record.get("last_message_at"))
+        participants: list[dict[str, Any]] = []
+        seen_participants = set()
+        for participant in record.get("participants") or []:
+            if not isinstance(participant, dict) or participant.get("id") in seen_participants:
+                continue
+            seen_participants.add(participant.get("id"))
+            participants.append({
+                "id": participant.get("id"),
+                "name": sanitize_text(participant.get("name"), "Unknown"),
+            })
+            if len(participants) >= MAX_CONVERSATION_PARTICIPANTS:
+                break
+        message_count = record.get("message_count")
+        if not isinstance(message_count, int) or isinstance(message_count, bool):
+            message_count = 0
+        scored.append((
+            sent_at or datetime.min.replace(tzinfo=timezone.utc),
+            {
+                "id": record.get("id"),
+                "subject": sanitize_text(record.get("subject"), "No subject"),
+                "workflow_state": record.get("workflow_state"),
+                "unread": record.get("workflow_state") == "unread",
+                "last_message_at": sent_at.isoformat() if sent_at is not None else None,
+                "last_message": plain_text_excerpt(record.get("last_message")),
+                "message_count": message_count,
+                "starred": record.get("starred") is True,
+                "participants": participants,
+                "context_name": sanitize_text(record.get("context_name")) or None,
+                "html_url": inbox_url,
+            },
+        ))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [item for _, item in scored]
 
 
 def empty_role_payload(error: str = "") -> dict[str, Any]:
@@ -465,6 +1170,9 @@ def collect_role(
                 ),
             })
         upcoming.sort(key=lambda item: item["due_at"])
+        announcements = collect_announcements(client, course["id"])
+        conversations = collect_conversations(client, course["id"])
+        discussions = collect_discussions(client, course["id"])
         current_score = enrollment.get("computed_current_score") if enrollment else None
         current_grade = enrollment.get("computed_current_grade") if enrollment else None
         current_grade = (
@@ -482,6 +1190,9 @@ def collect_role(
             "current_grade": current_grade,
             "needs_grading_count": needs_grading if role == "teacher" else 0,
             "assignments": upcoming,
+            "announcements": announcements,
+            "conversations": conversations,
+            "discussions": discussions,
         })
     result_courses.sort(key=lambda item: item["name"].lower())
     hidden_courses.sort(key=lambda item: item["name"].lower())
@@ -546,11 +1257,27 @@ def print_terminal(data: dict[str, Any]) -> None:
                         else "unknown"
                     )
                 print(f"  [{status:9}] {assignment['due_at'][:10]}  {assignment['name']}")
+            for announcement in (course.get("announcements") or [])[:RECENT_ITEM_LIMIT]:
+                posted = (announcement.get("posted_at") or "")[:10] or "no date"
+                print(f"  [announce ] {posted}  {announcement.get('title', 'Untitled announcement')}")
+            unread = [c for c in course.get("conversations") or [] if c.get("unread")]
+            for conversation in unread[:RECENT_ITEM_LIMIT]:
+                sent = (conversation.get("last_message_at") or "")[:10] or "no date"
+                print(f"  [unread   ] {sent}  {conversation.get('subject', 'No subject')}")
+            for discussion in (course.get("discussions") or [])[:RECENT_ITEM_LIMIT]:
+                active = (discussion.get("last_activity_at") or "")[:10] or "no date"
+                print(f"  [discuss  ] {active}  {discussion.get('title', 'Untitled discussion')}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["fetch", "set-token", "clear-token", "hide-course", "unhide-course"])
+    parser.add_argument(
+        "command",
+        choices=[
+            "fetch", "login", "clear-session", "set-token", "clear-token",
+            "hide-course", "unhide-course",
+        ],
+    )
     parser.add_argument("course_id", nargs="?")
     parser.add_argument("--days", type=int, default=14)
     parser.add_argument("--json", action="store_true", dest="as_json")
@@ -558,24 +1285,54 @@ def main() -> int:
         "--token-from-env", action="store_true",
         help="read CANVAS_API_KEY instead of the URL-scoped system keyring",
     )
+    parser.add_argument(
+        "--browser", default="",
+        help="Chromium-family browser executable to use for login",
+    )
+    parser.add_argument(
+        "--login-timeout", type=int, default=DEFAULT_LOGIN_TIMEOUT_SECONDS,
+        help="seconds to wait for browser login (30-900; default: 300)",
+    )
     parser.add_argument("--course-name", default="")
     parser.add_argument("--course-code", default="")
     parser.add_argument(
         "--base-url", default="",
-        help="Canvas installation URL; defaults to CANVAS_BASE_URL",
+        help=(
+            "Canvas installation URL; defaults to CANVAS_BASE_URL or the "
+            "configured Omarchy bar setting"
+        ),
     )
     args = parser.parse_args()
     try:
-        raw_base_url = args.base_url or os.environ.get("CANVAS_BASE_URL", "")
-        if not raw_base_url:
-            raise RuntimeError(
-                "Set a Canvas URL with --base-url or CANVAS_BASE_URL "
-                "(for example, https://canvas.example.edu)"
-            )
-        base_url = normalize_instance_url(raw_base_url)
+        base_url = resolve_base_url(args.base_url)
         if args.command == "set-token":
             save_token(base_url, getpass.getpass(f"Canvas API token for {base_url}: "))
             print(f"Canvas token saved in the system keyring for {base_url}.")
+            return 0
+        if args.command == "login":
+            if not secret_tool_path():
+                raise RuntimeError(
+                    "secret-tool is required to save a browser session; install libsecret"
+                )
+            print(
+                f"Opening a private browser window for {base_url}.\n"
+                "Complete the Canvas login there; the window will close automatically."
+            )
+            session = browser_login(base_url, args.browser, args.login_timeout)
+            save_browser_session(base_url, session.value, session.base_url)
+            print(
+                "Canvas browser session saved in the system keyring for "
+                f"{session.base_url}."
+            )
+            if session.base_url != base_url:
+                print(
+                    f"Canvas redirected {base_url} to its API origin at "
+                    f"{session.base_url}; the saved login will use that origin."
+                )
+            return 0
+        if args.command == "clear-session":
+            clear_browser_session(base_url)
+            print(f"Canvas browser session removed from the system keyring for {base_url}.")
             return 0
         if args.command == "clear-token":
             clear_token(base_url)
@@ -588,16 +1345,26 @@ def main() -> int:
             set_course_hidden(base_url, args.course_id, hidden, args.course_name, args.course_code)
             print("Course hidden." if hidden else "Course unhidden.")
             return 0
-        token = get_token(base_url, args.token_from_env)
-        if not token:
+        credential = get_credential(base_url, args.token_from_env)
+        if not credential:
             if args.token_from_env:
                 raise RuntimeError("CANVAS_API_KEY is empty")
             raise RuntimeError(
-                f"No Canvas API token is saved for {base_url}. "
-                f"Run 'omacanvas set-token --base-url {base_url}'"
+                f"No Canvas credential is saved for {base_url}. "
+                f"Run 'omacanvas login --base-url {base_url}' or save an API token"
             )
+        credential_kind, secret, credential_base_url = credential
+        client = (
+            CanvasClient(
+                credential_base_url,
+                browser_session=secret,
+                login_base_url=base_url,
+            )
+            if credential_kind == "browser_session"
+            else CanvasClient(credential_base_url, secret)
+        )
         hidden_ids = set(hidden_courses_for(base_url))
-        data = collect(CanvasClient(base_url, token), max(1, args.days), hidden_course_ids=hidden_ids)
+        data = collect(client, max(1, args.days), hidden_course_ids=hidden_ids)
         if args.as_json:
             print(json.dumps(data, indent=2, ensure_ascii=False))
         else:

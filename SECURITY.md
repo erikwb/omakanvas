@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest released version of Omacanvas.
+Security fixes are provided for the latest released version of Omakanvas.
 
 | Release | Supported |
 | --- | --- |
@@ -21,11 +21,12 @@ instead.
 Include enough information to reproduce and assess the issue, such as the
 affected version, relevant configuration, expected behavior, observed
 behavior, and reproducible steps. Never include a Canvas API token, password,
-session cookie, or other credential in a report, screenshot, log, or example.
+browser session cookie, or other credential in a report, screenshot, log, or
+example.
 
 Security concerns include, but are not limited to:
 
-- Exposure of Canvas API tokens or other sensitive data.
+- Exposure of Canvas API tokens, browser sessions, or other sensitive data.
 - Authenticated requests being sent somewhere other than the configured Canvas
   installation.
 - Bypasses of Canvas base URL validation.
@@ -39,14 +40,20 @@ bugs that do not have a security impact.
 ## Exposed credentials
 
 If a Canvas API token may have been exposed, revoke it immediately in Canvas,
-generate a replacement, and save the replacement with Omacanvas's `set-token`
+generate a replacement, and save the replacement with Omakanvas's `set-token`
 command. Do not wait for a vulnerability report to be reviewed before rotating
 a potentially compromised token.
 
-Omacanvas stores tokens in the desktop Secret Service keyring and sends them
-only to the user-configured Canvas installation. Because Omarchy plugins run as
-unsandboxed user code, users should review plugin source and updates before
-installing them.
+If a harvested browser session may have been exposed, remove it with
+`clear-session` and use the institution's session-management controls (or ask
+its Canvas administrator) to invalidate active sessions before running `login`
+again. Omakanvas stores tokens and browser sessions in separate desktop Secret
+Service keyring entries and sends them only to the user-configured Canvas
+installation. Browser login uses a private temporary Chromium profile, a
+process-private debugging pipe, and retains only the validated Canvas session
+value and API base URL.
+Because Omarchy plugins run as unsandboxed user code, users should review plugin
+source and updates before installing them.
 
 ## Disclosure
 
