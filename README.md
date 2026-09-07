@@ -176,7 +176,7 @@ to switch back to the token.
   from the panel instead of the terminal; signing in opens a browser window
   and continues automatically once login completes.
 
-The widget refreshes every six hours by default and shows assignments due in
+The widget refreshes every hour by default and shows assignments due in
 the next 14 days.
 
 ### Assignment status and availability
@@ -382,7 +382,7 @@ Review third-party plugin source before installation.
   Canvas returns both active student and teacher roles. Accounts with one role
   open directly in that view.
 - **A lock or unlock date looks stale** — right-click the bar icon to refresh;
-  automatic refresh occurs every six hours by default.
+  automatic refresh occurs every hour by default.
 - **Changes do not appear** — right-click the icon, then run
   `omarchy restart shell` if needed.
 
