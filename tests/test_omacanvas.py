@@ -12,7 +12,7 @@ from urllib.request import Request
 sys.path.insert(0, str(Path(__file__).parents[1]))
 from importlib.machinery import SourceFileLoader
 
-module = SourceFileLoader("omacanvas", str(Path(__file__).parents[1] / "omacanvas")).load_module()
+module = SourceFileLoader("omakanvas", str(Path(__file__).parents[1] / "omakanvas")).load_module()
 
 
 class FakeClient:
@@ -319,7 +319,7 @@ class CanvasTests(unittest.TestCase):
             self.assertEqual(module._keyring_token("https://canvas.example.edu/"), "saved-token")
             self.assertEqual(
                 run.call_args.args[0],
-                ["/usr/bin/secret-tool", "lookup", "service", "omacanvas", "base_url", "https://canvas.example.edu"],
+                ["/usr/bin/secret-tool", "lookup", "service", "omakanvas", "base_url", "https://canvas.example.edu"],
             )
 
     def test_keyring_failure_has_actionable_error(self):
@@ -335,7 +335,7 @@ class CanvasTests(unittest.TestCase):
             self.assertEqual(
                 run.call_args.args[0],
                 ["/usr/bin/secret-tool", "store", "--label=Omakanvas API token (canvas.example.edu)",
-                 "service", "omacanvas", "base_url", "https://canvas.example.edu"],
+                 "service", "omakanvas", "base_url", "https://canvas.example.edu"],
             )
             self.assertEqual(run.call_args.kwargs["input"], "secret-token\n")
 
@@ -372,7 +372,7 @@ class CanvasTests(unittest.TestCase):
             self.assertEqual(
                 run.call_args.args[0],
                 ["/usr/bin/secret-tool", "lookup", "service",
-                 "omacanvas-browser-session", "base_url", "https://canvas.example.edu"],
+                 "omakanvas-browser-session", "base_url", "https://canvas.example.edu"],
             )
 
     def test_saves_browser_session_and_validated_api_base_url_in_keyring(self):
@@ -386,7 +386,7 @@ class CanvasTests(unittest.TestCase):
                 run.call_args.args[0],
                 ["/usr/bin/secret-tool", "store",
                  "--label=Omakanvas browser session (school.instructure.com)",
-                 "service", "omacanvas-browser-session", "base_url",
+                 "service", "omakanvas-browser-session", "base_url",
                  "https://canvas.example.edu"],
             )
             self.assertEqual(
@@ -853,7 +853,7 @@ class CanvasTests(unittest.TestCase):
 
     def test_hidden_course_preferences_are_written_privately_and_atomically(self):
         with TemporaryDirectory() as directory:
-            path = Path(directory) / "omacanvas" / "hidden-courses.json"
+            path = Path(directory) / "omakanvas" / "hidden-courses.json"
             module.set_course_hidden(
                 "https://canvas.example.edu", "20", True,
                 "Orientation", "ORIENT", path,

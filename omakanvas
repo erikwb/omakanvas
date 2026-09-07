@@ -25,8 +25,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 PLUGIN_ID = "io.github.erikwb.omakanvas"
-SERVICE = "omacanvas"
-BROWSER_SESSION_SERVICE = "omacanvas-browser-session"
+SERVICE = "omakanvas"
+BROWSER_SESSION_SERVICE = "omakanvas-browser-session"
 BROWSER_SESSION_VERSION = 1
 PAYLOAD_VERSION = 5
 VISIBILITY_VERSION = 1
@@ -108,7 +108,7 @@ class SameOriginRedirectHandler(HTTPRedirectHandler):
 
 def visibility_path() -> Path:
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return config_home / "omacanvas" / "hidden-courses.json"
+    return config_home / "omakanvas" / "hidden-courses.json"
 
 
 def shell_config_path() -> Path:
@@ -710,7 +710,7 @@ def browser_login(
     instance_url = normalize_instance_url(base_url)
     executable = browser_path(requested_browser)
     deadline = time.monotonic() + timeout
-    with tempfile.TemporaryDirectory(prefix="omacanvas-browser-") as directory:
+    with tempfile.TemporaryDirectory(prefix="omakanvas-browser-") as directory:
         profile = Path(directory)
         os.chmod(profile, 0o700)
         process, connection = _start_browser(executable, profile, instance_url)
@@ -805,7 +805,7 @@ class CanvasClient:
         if self.auth_kind == "browser_session":
             return CanvasAuthenticationError(
                 "Canvas rejected the browser session; run "
-                f"'omacanvas login --base-url {self.login_base_url}' again"
+                f"'omakanvas login --base-url {self.login_base_url}' again"
             )
         return CanvasAuthenticationError("Canvas rejected the API token")
 
@@ -1351,7 +1351,7 @@ def main() -> int:
                 raise RuntimeError("CANVAS_API_KEY is empty")
             raise RuntimeError(
                 f"No Canvas credential is saved for {base_url}. "
-                f"Run 'omacanvas login --base-url {base_url}' or save an API token"
+                f"Run 'omakanvas login --base-url {base_url}' or save an API token"
             )
         credential_kind, secret, credential_base_url = credential
         client = (
@@ -1371,7 +1371,7 @@ def main() -> int:
             print_terminal(data)
         return 0
     except (RuntimeError, OSError, subprocess.CalledProcessError) as error:
-        print(f"omacanvas: {error}", file=sys.stderr)
+        print(f"omakanvas: {error}", file=sys.stderr)
         return 1
 
 
