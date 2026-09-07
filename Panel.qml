@@ -43,6 +43,9 @@ Panel {
   property bool loggingIn: false
   property bool authError: false
   property string pendingToken: ""
+  property bool showSetup: false
+  readonly property bool setupVisible: root.showSetup || root.baseUrl === ""
+    || (root.authError && root.errorText !== "")
   property bool refreshAfterStatus: false
   property var pendingVisibilityCourse: null
   property bool pendingHiddenState: false
@@ -606,6 +609,7 @@ Panel {
   onOpenedChanged: if (opened) {
     cursorActive = false
     submittedAssignmentsExpanded = false
+    showSetup = false
     if (panelFlick) panelFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -815,7 +819,7 @@ Panel {
           }
 
           Button {
-            visible: root.authError && root.errorText !== "" && !root.loggingIn
+            visible: root.setupVisible && root.baseUrl !== "" && !root.loggingIn
             width: parent.width
             text: "Sign in with Canvas"
             iconText: "\uf090"
@@ -827,8 +831,7 @@ Panel {
           }
 
           Row {
-            visible: (root.baseUrl === "" || (root.authError && root.errorText !== ""))
-              && !root.loggingIn
+            visible: root.setupVisible && !root.loggingIn
             width: parent.width
             spacing: Style.space(8)
 
@@ -854,8 +857,7 @@ Panel {
           }
 
           Row {
-            visible: root.baseUrl !== "" && root.authError && root.errorText !== ""
-              && !root.loggingIn
+            visible: root.setupVisible && root.baseUrl !== "" && !root.loggingIn
             width: parent.width
             spacing: Style.space(8)
 
@@ -1672,6 +1674,20 @@ Panel {
             font.pixelSize: Style.font.caption
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
+          }
+
+          Button {
+            width: parent.width
+            text: root.showSetup ? "Hide setup" : "Setup"
+            iconText: root.showSetup ? "\uf078" : "\uf054"
+            bordered: false
+            leftAlign: true
+            foreground: root.dim
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            iconSize: Style.font.caption
+            horizontalPadding: 0
+            onClicked: root.showSetup = !root.showSetup
           }
         }
       }
