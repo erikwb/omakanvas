@@ -243,6 +243,17 @@ Panel {
     loggingIn = false
   }
 
+  function displayError() {
+    if (!authError) return errorText
+    if (/no canvas credential|canvas_api_key is empty/i.test(errorText))
+      return "You're not signed in. Sign in with Canvas to load your courses."
+    if (/rejected the browser session/i.test(errorText))
+      return "Your Canvas session expired. Sign in again to continue."
+    if (/rejected the api token/i.test(errorText))
+      return "Canvas rejected the saved API token. Sign in or save a new token."
+    return errorText
+  }
+
   function grade(course) {
     if (!course) return "No grade"
     if (course.current_grade !== null && course.current_grade !== undefined && course.current_grade !== "")
@@ -485,13 +496,17 @@ Panel {
     text: "\uf0ae"
     active: root.errorText !== "" || root.roleError !== "" || root.urgentCount > 0
     tooltipText: root.errorText !== ""
-      ? "Omacanvas — " + root.errorText
+      ? "Omacanvas — " + root.displayError()
       : (root.roleError !== "" ? "Omacanvas — " + root.roleError
       : "Omacanvas — " + (root.teaching ? "Teaching · " : "Student · ")
         + root.pendingCount + " assignment" + (root.pendingCount === 1 ? "" : "s")
         + " due · right-click to refresh")
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) root.refreshNow()
+      else if (root.authError && !root.loggingIn && root.baseUrl !== "") {
+        root.open()
+        root.startLogin()
+      }
       else root.toggle()
     }
   }
@@ -660,7 +675,7 @@ Panel {
           Text {
             visible: root.errorText !== ""
             width: parent.width
-            text: root.errorText
+            text: root.displayError()
             textFormat: Text.PlainText
             color: root.urgent
             font.family: root.fontFamily
