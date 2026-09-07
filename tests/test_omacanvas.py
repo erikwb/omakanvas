@@ -339,6 +339,30 @@ class CanvasTests(unittest.TestCase):
             )
             self.assertEqual(run.call_args.kwargs["input"], "secret-token\n")
 
+    def test_set_token_from_stdin_saves_without_prompt(self):
+        import io as io_module
+        argv = ["omakanvas", "set-token", "--base-url", "https://canvas.example.edu",
+                "--token-stdin"]
+        with patch.object(module.sys, "argv", argv), \
+             patch.object(module.sys, "stdin", io_module.StringIO("  typed-token\n")), \
+             patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
+             patch.object(module.subprocess, "run") as run, \
+             patch.object(module.getpass, "getpass",
+                          side_effect=AssertionError("must not prompt")):
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(run.call_args.kwargs["input"], "typed-token\n")
+
+    def test_set_token_from_empty_stdin_fails(self):
+        import io as io_module
+        argv = ["omakanvas", "set-token", "--base-url", "https://canvas.example.edu",
+                "--token-stdin"]
+        with patch.object(module.sys, "argv", argv), \
+             patch.object(module.sys, "stdin", io_module.StringIO("\n")), \
+             patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
+             patch.object(module.subprocess, "run") as run:
+            self.assertEqual(module.main(), 1)
+        run.assert_not_called()
+
     def test_save_token_failure_has_actionable_error(self):
         with patch.object(module, "secret_tool_path", return_value="/usr/bin/secret-tool"), \
              patch.object(module.subprocess, "run", side_effect=OSError("keyring unavailable")):

@@ -80,6 +80,9 @@ Set it with Omarchy's bar command:
 omarchy bar set io.github.erikwb.omakanvas baseUrl https://canvas.example.edu
 ```
 
+You can also enter it in the panel itself: open Omakanvas before any URL is
+configured and use the URL field and **Save** button.
+
 ### 2. Sign in through the browser
 
 Run the installed helper; it reads the URL from the Omarchy bar setting:
@@ -142,7 +145,8 @@ Treat the token like a password.
 
 ### 4. Save the optional token in the keyring
 
-Run the installed helper and enter the token at the hidden prompt:
+Enter it in the panel's token field and select **Save**, or run the installed
+helper and enter the token at the hidden prompt:
 
 ```sh
 ~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas set-token
