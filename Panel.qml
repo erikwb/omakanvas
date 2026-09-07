@@ -45,6 +45,8 @@ Panel {
   property string pendingToken: ""
   readonly property bool needsSetup: root.baseUrl === ""
     || (root.authError && root.errorText !== "")
+  readonly property bool showSkeletons: root.loading
+    && String(payload.fetched_at || "") === "" && root.errorText === ""
   property bool refreshAfterStatus: false
   property var pendingVisibilityCourse: null
   property bool pendingHiddenState: false
@@ -641,16 +643,6 @@ Panel {
       }
       else root.toggle()
     }
-
-    NumberAnimation on textRotation {
-      from: 0
-      to: 360
-      duration: 1200
-      loops: Animation.Infinite
-      easing.type: Easing.Linear
-      running: root.loading || root.loggingIn
-      onRunningChanged: if (!running) button.textRotation = 0
-    }
   }
 
   KeyboardPanel {
@@ -719,6 +711,16 @@ Panel {
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.display
+
+              NumberAnimation on opacity {
+                from: 1.0
+                to: 0.35
+                duration: 800
+                easing.type: Easing.InOutQuad
+                loops: Animation.Infinite
+                running: root.showSkeletons
+                onRunningChanged: if (!running) heroIcon.opacity = 1
+              }
             }
 
             Column {
@@ -942,8 +944,61 @@ Panel {
           }
 
           Column {
+            id: skeletonPane
+            visible: root.showSkeletons
+            width: parent.width
+            spacing: Style.space(12)
+
+            Row {
+              id: skeletonChips
+              width: parent.width
+              spacing: Style.space(8)
+
+              Repeater {
+                model: 3
+                Rectangle {
+                  required property int index
+                  width: (skeletonPane.width - 2 * skeletonChips.spacing) / 3
+                  height: Style.font.caption + Style.space(10)
+                  radius: Style.cornerRadius
+                  color: root.alpha(root.foreground, 0.14)
+
+                  SequentialAnimation on opacity {
+                    running: root.showSkeletons
+                    loops: Animation.Infinite
+                    PauseAnimation { duration: index * 180 }
+                    NumberAnimation { from: 0.35; to: 0.9; duration: 700; easing.type: Easing.InOutQuad }
+                    NumberAnimation { from: 0.9; to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
+                  }
+                }
+              }
+            }
+
+            Repeater {
+              model: [0.92, 0.7, 0.85, 0.6]
+              Rectangle {
+                required property real modelData
+                required property int index
+                width: skeletonPane.width * modelData
+                height: Style.font.body + Style.space(8)
+                radius: Style.cornerRadius
+                color: root.alpha(root.foreground, 0.14)
+
+                SequentialAnimation on opacity {
+                  running: root.showSkeletons
+                  loops: Animation.Infinite
+                  PauseAnimation { duration: 200 + index * 180 }
+                  NumberAnimation { from: 0.35; to: 0.9; duration: 700; easing.type: Easing.InOutQuad }
+                  NumberAnimation { from: 0.9; to: 0.35; duration: 700; easing.type: Easing.InOutQuad }
+                }
+              }
+            }
+          }
+
+          Column {
             id: overviewPane
             visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 0
+              && !root.showSkeletons
             width: parent.width
             spacing: Style.space(12)
 
@@ -1064,6 +1119,7 @@ Panel {
           Column {
             id: assignmentsPane
             visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 1
+              && !root.showSkeletons
             width: parent.width
             spacing: Style.space(9)
 
@@ -1174,6 +1230,7 @@ Panel {
           Column {
             id: coursesPane
             visible: root.errorText === "" && root.roleError === "" && root.selectedPane === 2
+              && !root.showSkeletons
             width: parent.width
             spacing: Style.space(10)
 
