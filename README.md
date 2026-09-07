@@ -80,9 +80,8 @@ Set it with Omarchy's bar command:
 omarchy bar set io.github.erikwb.omakanvas baseUrl https://canvas.example.edu
 ```
 
-You can also enter it in the panel itself: open Omakanvas and expand **Setup**
-at the bottom, then use the URL field and **Save** button. The setup section
-also appears automatically before any URL is configured or when sign-in fails.
+You can also enter it in the panel itself: it asks for the URL directly
+before any URL is configured or when sign-in fails.
 
 ### 2. Sign in through the browser
 
@@ -146,7 +145,8 @@ Treat the token like a password.
 
 ### 4. Save the optional token in the keyring
 
-Enter it in the panel's token field under **Setup** and select **Save**, or run the installed
+Enter it in the panel's token field and select **Save token** when the panel
+asks for it, or run the installed
 helper and enter the token at the hidden prompt:
 
 ```sh
