@@ -592,6 +592,23 @@ class CanvasTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "cancelled"):
             module._cancel_browser_login(module.signal.SIGTERM, None)
 
+    def test_browser_login_launches_without_extensions(self):
+        seen = {}
+
+        def fake_popen(args, **kwargs):
+            seen["args"] = args
+            return Mock()
+
+        with patch.object(module.subprocess, "Popen", side_effect=fake_popen):
+            _process, connection = module._start_browser(
+                "/usr/bin/chromium", Path("/tmp/omakanvas-profile"),
+                "https://canvas.example.edu",
+            )
+        try:
+            self.assertIn("--disable-extensions", seen["args"])
+        finally:
+            connection.close()
+
     def test_browser_login_restores_sigterm_handler_on_failure(self):
         before = module.signal.getsignal(module.signal.SIGTERM)
         with patch.object(

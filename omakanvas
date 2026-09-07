@@ -594,6 +594,7 @@ def _start_browser(
                 "--remote-debugging-pipe",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--disable-extensions",
                 "--new-window",
                 f"{instance_url}/login",
             ],
