@@ -6,10 +6,6 @@ Haynes (MIT licensed, copyright retained in [LICENSE](LICENSE)), continuing
 with browser-session login, per-course announcements, discussions, messages,
 and panel sign-in.
 
-Migrating from Omacanvas? Remove the old widget, add Omakanvas, and set the
-same `baseUrl`. Saved browser sessions, tokens, and hidden-course preferences
-carry over automatically.
-
 Recent changes were hella vibed by Muse Spark 1.3.
 
 Omakanvas is a native Omarchy Quickshell bar widget for Canvas LMS. It shows
@@ -89,7 +85,7 @@ omarchy bar set io.github.erikwb.omakanvas baseUrl https://canvas.example.edu
 Run the installed helper; it reads the URL from the Omarchy bar setting:
 
 ```sh
-~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas login
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas login
 ```
 
 An explicit `--base-url` takes precedence when needed.
@@ -113,7 +109,7 @@ If automatic browser detection does not find the desired browser, pass its
 executable explicitly:
 
 ```sh
-~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas login \
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas login \
   --browser /usr/bin/chromium
 ```
 
@@ -149,7 +145,7 @@ Treat the token like a password.
 Run the installed helper and enter the token at the hidden prompt:
 
 ```sh
-~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas set-token
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas set-token
 ```
 
 The URL must match the configured base URL after trailing slashes are removed.
@@ -218,7 +214,7 @@ action to restore a course.
 Course visibility is stored per Canvas installation in:
 
 ```text
-${XDG_CONFIG_HOME:-~/.config}/omacanvas/hidden-courses.json
+${XDG_CONFIG_HOME:-~/.config}/omakanvas/hidden-courses.json
 ```
 
 ## Settings
@@ -244,13 +240,13 @@ The assignment window accepts 1–60 days. The refresh interval accepts
 Open an isolated browser and save its validated Canvas session:
 
 ```sh
-~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas login
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas login
 ```
 
 Remove the locally saved browser session:
 
 ```sh
-~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas clear-session
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas clear-session
 ```
 
 This removes Omakanvas's keyring copy; it does not sign other browsers out of
@@ -259,13 +255,13 @@ Canvas.
 Replace or add a token:
 
 ```sh
-~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas set-token
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas set-token
 ```
 
 Remove the token for one Canvas installation:
 
 ```sh
-~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas clear-token
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas clear-token
 ```
 
 For temporary terminal use, explicitly select `CANVAS_API_KEY` instead of the
@@ -274,7 +270,7 @@ unless `--token-from-env` is present:
 
 ```sh
 CANVAS_API_KEY='your-token' \
-  ~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas fetch \
+  ~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas fetch \
   --token-from-env --base-url https://canvas.example.edu
 ```
 
@@ -286,17 +282,17 @@ Avoid placing a real token in shell history. Prefer the interactive
 The helper can also be run independently:
 
 ```sh
-OMACANVAS=~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas
+OMAKANVAS=~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas
 
-$OMACANVAS fetch
-$OMACANVAS fetch --json
-$OMACANVAS login
-$OMACANVAS clear-session
-$OMACANVAS set-token
-$OMACANVAS clear-token
-$OMACANVAS hide-course COURSE_ID --base-url https://canvas.example.edu \
+$OMAKANVAS fetch
+$OMAKANVAS fetch --json
+$OMAKANVAS login
+$OMAKANVAS clear-session
+$OMAKANVAS set-token
+$OMAKANVAS clear-token
+$OMAKANVAS hide-course COURSE_ID --base-url https://canvas.example.edu \
   --course-name 'Orientation' --course-code 'ORIENT'
-$OMACANVAS unhide-course COURSE_ID --base-url https://canvas.example.edu
+$OMAKANVAS unhide-course COURSE_ID --base-url https://canvas.example.edu
 ```
 
 Human-readable `fetch` output is divided into Student and Teaching sections.

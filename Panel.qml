@@ -17,7 +17,7 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string pluginDir: decodeURIComponent(
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "").replace(/\/$/, ""))
-  readonly property string helperPath: pluginDir + "/omacanvas"
+  readonly property string helperPath: pluginDir + "/omakanvas"
   readonly property string baseUrl: String(setting("baseUrl", "")).trim()
   readonly property string configurationMessage: "Set your Canvas URL with omarchy bar set, then run the helper's login command or save an API token."
   readonly property int days: boundedSetting("days", 14, 1, 60)
@@ -444,7 +444,7 @@ Panel {
       root.loading = false
       if (exitCode !== 0) {
         var message = String(statusError.text || "").trim()
-        root.errorText = message !== "" ? message.replace(/^omacanvas:\s*/, "")
+        root.errorText = message !== "" ? message.replace(/^omakanvas:\s*/, "")
                                             : "Canvas could not be refreshed."
         root.authError = /credential|log ?in|session|api token|canvas_api_key|rejected|expired/i.test(message)
         return
@@ -475,7 +475,7 @@ Panel {
     onExited: function(exitCode) {
       if (exitCode !== 0) {
         var message = String(visibilityErrorOutput.text || "").trim()
-        root.visibilityError = message !== "" ? message.replace(/^omacanvas:\s*/, "")
+        root.visibilityError = message !== "" ? message.replace(/^omakanvas:\s*/, "")
                                                   : "Could not update the hidden course list."
       } else {
         if (root.pendingHiddenState) root.selectedCourseId = ""
@@ -496,7 +496,7 @@ Panel {
       if (exitCode !== 0) {
         var message = String(loginErrorOutput.text || "").trim()
         if (/cancel/i.test(message)) return
-        root.errorText = message !== "" ? message.replace(/^omacanvas:\s*/, "")
+        root.errorText = message !== "" ? message.replace(/^omakanvas:\s*/, "")
                                         : "Canvas sign-in did not complete."
         root.authError = true
         return
