@@ -595,6 +595,7 @@ def _start_browser(
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-extensions",
+                "--disable-save-password-bubble",
                 "--new-window",
                 f"{instance_url}/login",
             ],

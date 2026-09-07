@@ -606,6 +606,7 @@ class CanvasTests(unittest.TestCase):
             )
         try:
             self.assertIn("--disable-extensions", seen["args"])
+            self.assertIn("--disable-save-password-bubble", seen["args"])
         finally:
             connection.close()
 
