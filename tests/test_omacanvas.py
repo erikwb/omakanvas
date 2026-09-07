@@ -1,4 +1,6 @@
 import unittest
+import io
+import json
 from datetime import datetime, timezone
 import os
 import stat
@@ -1138,6 +1140,110 @@ class CanvasTests(unittest.TestCase):
             and (params or {}).get("only_announcements") != "true"
         ]
         self.assertEqual(discussion_requests, [])
+
+
+class SnapshotTests(unittest.TestCase):
+    def fetch(self, client, path, as_json=True):
+        argv = ["omakanvas", "fetch", "--base-url", "https://canvas.test"]
+        if as_json:
+            argv.append("--json")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(module.sys, "argv", argv), \
+             patch.object(module.sys, "stdout", stdout), \
+             patch.object(module.sys, "stderr", stderr), \
+             patch.object(module, "get_credential", return_value=(
+                 "token", "secret-not-for-the-snapshot", "https://canvas.test")), \
+             patch.object(module, "CanvasClient", return_value=client), \
+             patch.object(module, "hidden_courses_for", return_value={}), \
+             patch.object(module, "data_path", return_value=path):
+            status = module.main()
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_data_path_respects_xdg_and_ignores_relative_paths(self):
+        with TemporaryDirectory() as directory:
+            home = Path(directory)
+            with patch.object(module.Path, "home", return_value=home):
+                for setting in ("", "relative/path"):
+                    with self.subTest(setting=setting), \
+                         patch.dict(os.environ, {"XDG_DATA_HOME": setting}):
+                        self.assertEqual(module.data_path(), home / ".local/share/omakanvas/latest.json")
+                with patch.dict(os.environ, {"XDG_DATA_HOME": str(home / "data")}):
+                    self.assertEqual(module.data_path(), home / "data/omakanvas/latest.json")
+
+    def test_data_path_command_needs_no_canvas_configuration_or_credentials(self):
+        output = io.StringIO()
+        with patch.object(module.sys, "argv", ["omakanvas", "data-path"]), \
+             patch.object(module.sys, "stdout", output), \
+             patch.object(module, "resolve_base_url", side_effect=AssertionError("must not resolve URL")), \
+             patch.object(module, "get_credential", side_effect=AssertionError("must not read keyring")):
+            self.assertEqual(module.main(), 0)
+        self.assertEqual(output.getvalue().strip(), str(module.data_path()))
+
+    def test_fetch_persists_all_records_and_full_bodies_in_both_output_modes(self):
+        body = "A complete announcement or discussion body. " * 20
+        records = [{"id": i, "title": f"Topic {i}", "message": f"<p>{body}</p>"}
+                   for i in range(5)]
+        conversations = [{"id": i, "subject": f"Conversation {i}",
+                          "workflow_state": "read", "last_message": body}
+                         for i in range(5)]
+        for as_json in (True, False):
+            with self.subTest(as_json=as_json), TemporaryDirectory() as directory:
+                path = Path(directory) / "omakanvas/latest.json"
+                client = AnnouncementClient(topics=records, discussions=records,
+                                            conversations=conversations)
+                status, stdout, stderr = self.fetch(client, path, as_json)
+                self.assertEqual((status, stderr), (0, ""))
+                data = json.loads(path.read_text())
+                self.assertEqual(data["base_url"], "https://canvas.test")
+                self.assertTrue(data["fetched_at"])
+                course = data["roles"]["student"]["courses"][0]
+                for field in ("announcements", "discussions", "conversations"):
+                    self.assertEqual(len(course[field]), 5)
+                self.assertEqual(course["announcements"][0]["body"], body.strip())
+                self.assertEqual(course["discussions"][0]["body"], body.strip())
+                self.assertEqual(course["conversations"][0]["last_message_body"], body.strip())
+                self.assertLess(len(course["announcements"][0]["excerpt"]), len(body))
+                self.assertNotIn("secret-not-for-the-snapshot", path.read_text())
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+                if as_json:
+                    self.assertEqual(json.loads(stdout), data)
+
+    def test_failed_fetch_keeps_the_previous_snapshot(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.json"
+            path.write_text('{"previous": true}\n')
+            client = AnnouncementClient(error=module.CanvasAuthenticationError("Canvas rejected login"))
+            status, stdout, stderr = self.fetch(client, path)
+            self.assertEqual(status, 1)
+            self.assertEqual(stdout, "")
+            self.assertIn("Canvas rejected login", stderr)
+            self.assertEqual(path.read_text(), '{"previous": true}\n')
+
+    def test_failed_atomic_replace_preserves_snapshot_and_cleans_temporary_file(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.json"
+            path.write_text('{"previous": true}\n')
+            with patch.object(module.os, "replace", side_effect=OSError("disk unavailable")):
+                status, stdout, stderr = self.fetch(AnnouncementClient(), path)
+            self.assertEqual(status, 1)
+            self.assertEqual(stdout, "")
+            self.assertIn("disk unavailable", stderr)
+            self.assertEqual(path.read_text(), '{"previous": true}\n')
+            self.assertEqual(list(path.parent.glob(".latest.json.*.tmp")), [])
+
+    def test_replacement_is_private_and_does_not_follow_destination_symlinks(self):
+        with TemporaryDirectory() as directory:
+            target = Path(directory) / "unrelated.json"
+            target.write_text("untouched")
+            path = Path(directory) / "omakanvas/latest.json"
+            path.parent.mkdir()
+            path.symlink_to(target)
+            module.write_private_json(path, {"current": True})
+            self.assertFalse(path.is_symlink())
+            self.assertEqual(target.read_text(), "untouched")
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(json.loads(path.read_text()), {"current": True})
 
 
 if __name__ == "__main__":
