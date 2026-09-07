@@ -7,8 +7,8 @@ import qs.Ui
 
 Panel {
   id: root
-  moduleName: "io.github.christopherhaynes33.omacanvas"
-  ipcTarget: "io.github.christopherhaynes33.omacanvas"
+  moduleName: "io.github.erikwb.omakanvas"
+  ipcTarget: "io.github.erikwb.omakanvas"
   manageIpc: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -452,7 +452,7 @@ Panel {
       try {
         var nextPayload = JSON.parse(String(statusOutput.text || ""))
         if (Number(nextPayload.schema_version) !== 5 || !nextPayload.roles)
-          throw new Error("Unsupported Omacanvas data format")
+          throw new Error("Unsupported Omakanvas data format")
         root.payload = nextPayload
         root.ensureSelectedRole()
         root.ensureSelectedCourse()
@@ -531,7 +531,7 @@ Panel {
   }
 
   IpcHandler {
-    target: "io.github.christopherhaynes33.omacanvas"
+    target: "io.github.erikwb.omakanvas"
     function open(): void { root.open() }
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
@@ -546,9 +546,9 @@ Panel {
     text: "\uf0ae"
     active: root.errorText !== "" || root.roleError !== "" || root.urgentCount > 0
     tooltipText: root.errorText !== ""
-      ? "Omacanvas — " + root.errorText
-      : (root.roleError !== "" ? "Omacanvas — " + root.roleError
-      : "Omacanvas — " + (root.teaching ? "Teaching · " : "Student · ")
+      ? "Omakanvas — " + root.errorText
+      : (root.roleError !== "" ? "Omakanvas — " + root.roleError
+      : "Omakanvas — " + (root.teaching ? "Teaching · " : "Student · ")
         + root.pendingCount + " assignment" + (root.pendingCount === 1 ? "" : "s")
         + " due · right-click to refresh")
     onPressed: function(buttonCode) {
@@ -640,7 +640,7 @@ Panel {
                   id: heroTitle
                   anchors.left: parent.left
                   anchors.verticalCenter: parent.verticalCenter
-                  text: "Omacanvas"
+                  text: "Omakanvas"
                   color: root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title

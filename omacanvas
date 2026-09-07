@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Omacanvas data helper for the native Omarchy bar plugin."""
+"""Omakanvas data helper for the native Omarchy bar plugin."""
 from __future__ import annotations
 
 import argparse
@@ -24,7 +24,7 @@ from urllib.parse import urlencode, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
-PLUGIN_ID = "io.github.christopherhaynes33.omacanvas"
+PLUGIN_ID = "io.github.erikwb.omakanvas"
 SERVICE = "omacanvas"
 BROWSER_SESSION_SERVICE = "omacanvas-browser-session"
 BROWSER_SESSION_VERSION = 1
@@ -153,7 +153,7 @@ def resolve_base_url(value: str = "", config_path: Path | None = None) -> str:
     if configured:
         return configured
     raise RuntimeError(
-        "No Canvas URL was provided and Omacanvas has no configured baseUrl. "
+        "No Canvas URL was provided and Omakanvas has no configured baseUrl. "
         f"Set it with 'omarchy bar set {PLUGIN_ID} baseUrl https://canvas.example.edu' "
         "or pass --base-url"
     )
@@ -321,7 +321,7 @@ def save_token(base_url: str, token: str) -> None:
     hostname = urlparse(instance_url).netloc
     try:
         subprocess.run(
-            [secret_tool, "store", f"--label=Omacanvas API token ({hostname})",
+            [secret_tool, "store", f"--label=Omakanvas API token ({hostname})",
              "service", SERVICE, "base_url", instance_url],
             input=token + "\n", text=True, check=True,
         )
@@ -415,7 +415,7 @@ def save_browser_session(
     }, separators=(",", ":"), sort_keys=True)
     try:
         subprocess.run(
-            [secret_tool, "store", f"--label=Omacanvas browser session ({hostname})",
+            [secret_tool, "store", f"--label=Omakanvas browser session ({hostname})",
              "service", BROWSER_SESSION_SERVICE, "base_url", instance_url],
             input=stored_session + "\n", text=True, check=True,
         )

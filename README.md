@@ -1,14 +1,24 @@
-# Omacanvas
+# Omakanvas
 
-Omacanvas is a native Omarchy Quickshell bar widget for Canvas LMS. It shows
+Omakanvas is a community fork of
+[Omacanvas](https://github.com/christopherhaynes33/omacanvas) by Christopher
+Haynes (MIT licensed, copyright retained in [LICENSE](LICENSE)), continuing
+with browser-session login, per-course announcements, discussions, messages,
+and panel sign-in.
+
+Migrating from Omacanvas? Remove the old widget, add Omakanvas, and set the
+same `baseUrl`. Saved browser sessions, tokens, and hidden-course preferences
+carry over automatically.
+
+Omakanvas is a native Omarchy Quickshell bar widget for Canvas LMS. It shows
 current grades and assignments due soon for students, plus upcoming assignment
 deadlines and grading counts for teachers. Accounts with both roles can switch
 between Student and Teaching views.
 
-Omacanvas is an independent community project and is not affiliated with,
+Omakanvas is an independent community project and is not affiliated with,
 endorsed by, or sponsored by Instructure or Canvas LMS.
 
-![Omacanvas Student Assignments, Teaching Overview, and Teaching Courses views](preview.png?v=1.0.0)
+![Omakanvas Student Assignments, Teaching Overview, and Teaching Courses views](preview.png?v=1.0.0)
 
 The panel provides three views:
 
@@ -35,14 +45,14 @@ omarchy pkg add libsecret
 Install directly from the public GitHub repository and enable the widget:
 
 ```sh
-omarchy plugin add https://github.com/christopherhaynes33/omacanvas.git --enable
+omarchy plugin add https://github.com/erikwb/omakanvas.git --enable
 ```
 
 Choose a bar section when prompted. The default section is the right side.
 
 ## Configure Canvas
 
-Omacanvas needs the HTTPS base URL of the Canvas installation and either a
+Omakanvas needs the HTTPS base URL of the Canvas installation and either a
 browser session or a personal access token. The URL is stored in Omarchy's
 normal widget settings. Credentials are stored in the system keyring and
 scoped to that configured URL, so separate Canvas installations can use
@@ -52,7 +62,7 @@ in case Canvas redirects the configured address to a different canonical host.
 ### 1. Find the Canvas base URL
 
 Open Canvas in a browser and copy only the origin from the address bar. Do not
-include a course or assignment path. Omacanvas accepts HTTPS URLs only.
+include a course or assignment path. Omakanvas accepts HTTPS URLs only.
 
 For example, if a course URL is:
 
@@ -69,7 +79,7 @@ https://canvas.example.edu
 Set it with Omarchy's bar command:
 
 ```sh
-omarchy bar set io.github.christopherhaynes33.omacanvas baseUrl https://canvas.example.edu
+omarchy bar set io.github.erikwb.omakanvas baseUrl https://canvas.example.edu
 ```
 
 ### 2. Sign in through the browser
@@ -77,13 +87,13 @@ omarchy bar set io.github.christopherhaynes33.omacanvas baseUrl https://canvas.e
 Run the installed helper; it reads the URL from the Omarchy bar setting:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas login
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas login
 ```
 
 An explicit `--base-url` takes precedence when needed.
 
-Omacanvas opens an isolated browser window. Complete the institution's normal
-Canvas login, including SSO or MFA. Omacanvas follows the HTTPS origins reached
+Omakanvas opens an isolated browser window. Complete the institution's normal
+Canvas login, including SSO or MFA. Omakanvas follows the HTTPS origins reached
 by the isolated login window and accepts a `canvas_session` cookie only after
 that origin successfully answers Canvas's `/api/v1/users/self` endpoint. It
 stores the validated API base URL alongside the cookie in the desktop keyring,
@@ -101,17 +111,17 @@ If automatic browser detection does not find the desired browser, pass its
 executable explicitly:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas login \
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas login \
   --browser /usr/bin/chromium
 ```
 
-Right-click the Omacanvas bar icon after login to refresh immediately.
+Right-click the Omakanvas bar icon after login to refresh immediately.
 
 ### 3. Optional: create a Canvas API token
 
 > [!IMPORTANT]
 > Instructure documents manual token generation as a testing workflow and
-> requires OAuth for applications used by multiple users. Omacanvas does not
+> requires OAuth for applications used by multiple users. Omakanvas does not
 > implement OAuth. Before using its optional token fallback, confirm that your
 > institution permits a manually generated token for a local, personal client.
 > See the [Canvas OAuth2 documentation](https://developerdocs.instructure.com/services/canvas/oauth2/file.oauth).
@@ -122,7 +132,7 @@ personal token in Canvas:
 1. Open **Account → Settings**.
 2. Find **Approved Integrations**.
 3. Select **New Access Token**.
-4. Enter a purpose such as `Omacanvas` and, if desired, an expiration date.
+4. Enter a purpose such as `Omakanvas` and, if desired, an expiration date.
 5. Select **Generate Token**.
 6. Copy the token immediately. Canvas normally displays the complete token
    only once.
@@ -137,7 +147,7 @@ Treat the token like a password.
 Run the installed helper and enter the token at the hidden prompt:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas set-token
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas set-token
 ```
 
 The URL must match the configured base URL after trailing slashes are removed.
@@ -182,7 +192,7 @@ this way. The Overview's **Next** line also skips submitted student work.
 
 Locked student assignments show their future unlock date when Canvas provides
 one. If Canvas reports the assignment as locked without a future unlock date,
-Omacanvas displays **Locked · No scheduled unlock date**. Lock and submission
+Omakanvas displays **Locked · No scheduled unlock date**. Lock and submission
 states are informational; selecting the assignment still opens its Canvas URL
 when one is available.
 
@@ -215,13 +225,13 @@ Settings are managed through `omarchy bar set`:
 
 ```sh
 # Change the assignment window to 21 days.
-omarchy bar set io.github.christopherhaynes33.omacanvas days 21 --json
+omarchy bar set io.github.erikwb.omakanvas days 21 --json
 
 # Change automatic refresh to every three hours.
-omarchy bar set io.github.christopherhaynes33.omacanvas refreshIntervalSec 10800 --json
+omarchy bar set io.github.erikwb.omakanvas refreshIntervalSec 10800 --json
 
 # Change Canvas installations. Sign in or save a token for the new URL separately.
-omarchy bar set io.github.christopherhaynes33.omacanvas baseUrl https://other.example.edu
+omarchy bar set io.github.erikwb.omakanvas baseUrl https://other.example.edu
 ```
 
 The assignment window accepts 1–60 days. The refresh interval accepts
@@ -232,28 +242,28 @@ The assignment window accepts 1–60 days. The refresh interval accepts
 Open an isolated browser and save its validated Canvas session:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas login
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas login
 ```
 
 Remove the locally saved browser session:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas clear-session
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas clear-session
 ```
 
-This removes Omacanvas's keyring copy; it does not sign other browsers out of
+This removes Omakanvas's keyring copy; it does not sign other browsers out of
 Canvas.
 
 Replace or add a token:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas set-token
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas set-token
 ```
 
 Remove the token for one Canvas installation:
 
 ```sh
-~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas clear-token
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas clear-token
 ```
 
 For temporary terminal use, explicitly select `CANVAS_API_KEY` instead of the
@@ -262,7 +272,7 @@ unless `--token-from-env` is present:
 
 ```sh
 CANVAS_API_KEY='your-token' \
-  ~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas fetch \
+  ~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas fetch \
   --token-from-env --base-url https://canvas.example.edu
 ```
 
@@ -274,7 +284,7 @@ Avoid placing a real token in shell history. Prefer the interactive
 The helper can also be run independently:
 
 ```sh
-OMACANVAS=~/.config/omarchy/plugins/io.github.christopherhaynes33.omacanvas/omacanvas
+OMACANVAS=~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omacanvas
 
 $OMACANVAS fetch
 $OMACANVAS fetch --json
@@ -296,51 +306,51 @@ unhide commands are normally easier to use from the Courses view.
 Update the Git-managed plugin:
 
 ```sh
-omarchy plugin update io.github.christopherhaynes33.omacanvas
+omarchy plugin update io.github.erikwb.omakanvas
 ```
 
 Disable or re-enable the widget:
 
 ```sh
-omarchy plugin disable io.github.christopherhaynes33.omacanvas
-omarchy plugin enable io.github.christopherhaynes33.omacanvas --section right
+omarchy plugin disable io.github.erikwb.omakanvas
+omarchy plugin enable io.github.erikwb.omakanvas --section right
 ```
 
 Remove the plugin:
 
 ```sh
-omarchy plugin remove io.github.christopherhaynes33.omacanvas
+omarchy plugin remove io.github.erikwb.omakanvas
 ```
 
 Removing the plugin does not remove browser sessions, tokens, or hidden-course
 preferences. Use `clear-session` and `clear-token` before removal and delete
-the Omacanvas configuration directory manually if those should also be removed.
+the Omakanvas configuration directory manually if those should also be removed.
 
 ## Privacy and permissions
 
-Omacanvas sends authenticated HTTPS requests only to the configured Canvas
+Omakanvas sends authenticated HTTPS requests only to the configured Canvas
 installation. It requests active student and teacher enrollments, student
 scores/grades and submission status, teacher grading counts, course publication
 status, and assignments due within the selected window. Assignment data
 includes publication status and Canvas availability dates needed to display
-lock and unlock information. Omacanvas also fetches every announcement,
+lock and unlock information. Omakanvas also fetches every announcement,
 discussion, and conversation for each visible course (titles/subjects, dates,
 authors or participants, excerpts, and links) for the per-course screen; the
 panel itself shows the three most recent announcements, the three most active
 discussions, and up to three unread conversations
 per course. The complete lists are included in `fetch --json` output so
-external tools can process them. Teacher data is read-only; Omacanvas does not
+external tools can process them. Teacher data is read-only; Omakanvas does not
 retrieve individual submissions or change grades. Hidden courses skip
 assignment, announcement, discussion, and conversation requests. The selected credential is read from the desktop keyring
 and is never written to Omarchy's plain-text configuration. Browser login uses
 a new private temporary browser profile and asks Chromium only for cookies
 applicable to HTTPS origins reached during login. Only a validated
 `canvas_session` value and its Canvas API base URL are retained. Assignment,
-announcement, discussion, message, and course links are opened in the default browser only after Omacanvas verifies
+announcement, discussion, message, and course links are opened in the default browser only after Omakanvas verifies
 that they use the validated Canvas origin; credentials are not included in
 browser links.
 
-Like every Omarchy shell plugin, Omacanvas runs as user code inside the shell.
+Like every Omarchy shell plugin, Omakanvas runs as user code inside the shell.
 Review third-party plugin source before installation.
 
 ## Troubleshooting
@@ -361,7 +371,7 @@ Review third-party plugin source before installation.
   `set-token` again.
 - **The API-token option is missing in Canvas** — the institution may prohibit
   personal tokens; ask its Canvas administrator.
-- **A course is missing** — Omacanvas displays active student and teacher
+- **A course is missing** — Omakanvas displays active student and teacher
   enrollments. Check the selected role and hidden-courses disclosure.
 - **The Student/Teaching toggle is missing** — the role label appears only when
   Canvas returns both active student and teacher roles. Accounts with one role
@@ -388,4 +398,4 @@ required.
 
 ## License
 
-Omacanvas is released under the MIT License. See [LICENSE](LICENSE).
+Omakanvas is released under the MIT License. See [LICENSE](LICENSE).

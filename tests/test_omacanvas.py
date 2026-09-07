@@ -206,7 +206,7 @@ class CanvasTests(unittest.TestCase):
                         "left": [],
                         "center": [],
                         "right": [{
-                            "id": "io.github.christopherhaynes33.omacanvas",
+                            "id": "io.github.erikwb.omakanvas",
                             "baseUrl": "https://Canvas.Example.EDU/",
                         }],
                     },
@@ -223,7 +223,7 @@ class CanvasTests(unittest.TestCase):
             path = Path(directory) / "shell.json"
             path.write_text(module.json.dumps({
                 "bar": {"layout": {"right": [{
-                    "id": "io.github.christopherhaynes33.omacanvas",
+                    "id": "io.github.erikwb.omakanvas",
                     "baseUrl": "https://canvas.example.edu",
                 }]}},
             }), encoding="utf-8")
@@ -334,7 +334,7 @@ class CanvasTests(unittest.TestCase):
             module.save_token("https://canvas.example.edu/", "secret-token")
             self.assertEqual(
                 run.call_args.args[0],
-                ["/usr/bin/secret-tool", "store", "--label=Omacanvas API token (canvas.example.edu)",
+                ["/usr/bin/secret-tool", "store", "--label=Omakanvas API token (canvas.example.edu)",
                  "service", "omacanvas", "base_url", "https://canvas.example.edu"],
             )
             self.assertEqual(run.call_args.kwargs["input"], "secret-token\n")
@@ -385,7 +385,7 @@ class CanvasTests(unittest.TestCase):
             self.assertEqual(
                 run.call_args.args[0],
                 ["/usr/bin/secret-tool", "store",
-                 "--label=Omacanvas browser session (school.instructure.com)",
+                 "--label=Omakanvas browser session (school.instructure.com)",
                  "service", "omacanvas-browser-session", "base_url",
                  "https://canvas.example.edu"],
             )

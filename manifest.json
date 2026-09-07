@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.christopherhaynes33.omacanvas",
-  "name": "Omacanvas",
+  "id": "io.github.erikwb.omakanvas",
+  "name": "Omakanvas",
   "version": "1.1.0",
   "author": "Christopher Haynes",
   "license": "MIT",
@@ -10,7 +10,7 @@
   "activation": "on-demand",
   "entryPoints": {"barWidget": "Panel.qml"},
   "barWidget": {
-    "displayName": "Omacanvas",
+    "displayName": "Omakanvas",
     "description": "Student grades, teacher deadlines, and upcoming Canvas assignments.",
     "category": "Productivity",
     "aliases": ["canvas", "assignments", "school"],

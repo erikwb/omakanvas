@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest released version of Omacanvas.
+Security fixes are provided for the latest released version of Omakanvas.
 
 | Release | Supported |
 | --- | --- |
@@ -40,14 +40,14 @@ bugs that do not have a security impact.
 ## Exposed credentials
 
 If a Canvas API token may have been exposed, revoke it immediately in Canvas,
-generate a replacement, and save the replacement with Omacanvas's `set-token`
+generate a replacement, and save the replacement with Omakanvas's `set-token`
 command. Do not wait for a vulnerability report to be reviewed before rotating
 a potentially compromised token.
 
 If a harvested browser session may have been exposed, remove it with
 `clear-session` and use the institution's session-management controls (or ask
 its Canvas administrator) to invalidate active sessions before running `login`
-again. Omacanvas stores tokens and browser sessions in separate desktop Secret
+again. Omakanvas stores tokens and browser sessions in separate desktop Secret
 Service keyring entries and sends them only to the user-configured Canvas
 installation. Browser login uses a private temporary Chromium profile, a
 process-private debugging pipe, and retains only the validated Canvas session
