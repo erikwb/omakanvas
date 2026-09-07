@@ -31,7 +31,7 @@ jobs:
 
       - name: Check Python syntax and plugin metadata
         run: |
-          python3 -m py_compile omakanvas tests/test_omakanvas.py
+          python3 -m py_compile omakanvas tests/test_omacanvas.py
           python3 -m json.tool manifest.json >/dev/null
           test -x omakanvas
           git diff --check

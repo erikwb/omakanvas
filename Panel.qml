@@ -622,52 +622,12 @@ Panel {
   }
 
   Component {
-    id: busySkeleton
-    Item {
+    id: barTaskIcon
+    TaskIcon {
       anchors.fill: parent
-
-      Text {
-        anchors.centerIn: parent
-        text: "\uf0ae"
-        font.family: root.fontFamily
-        font.pixelSize: Style.bar.iconFont
-        color: (button.active && button.useActiveColor) ? button.activeColor : root.foreground
-      }
-
-      Column {
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 2
-        spacing: 2
-
-        Repeater {
-          model: [9, 7, 8]
-          Rectangle {
-            required property real modelData
-            required property int index
-            width: modelData
-            height: 2
-            radius: 1
-            color: root.alpha(root.foreground, 0.3)
-
-            Rectangle {
-              anchors.left: parent.left
-              anchors.verticalCenter: parent.verticalCenter
-              width: 0
-              height: parent.height
-              radius: parent.radius
-              color: root.foreground
-
-              SequentialAnimation on width {
-                loops: Animation.Infinite
-                PauseAnimation { duration: index * 250 }
-                NumberAnimation { from: 0; to: modelData; duration: 350; easing.type: Easing.InOutQuad }
-                PauseAnimation { duration: (2 - index) * 250 + 200 }
-              }
-            }
-          }
-        }
-      }
+      iconSize: button.fontSize
+      color: (button.active && button.useActiveColor) ? button.activeColor : root.foreground
+      busy: root.loading || root.loggingIn
     }
   }
 
@@ -676,7 +636,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: "\uf0ae"
-    iconComponent: (root.loading || root.loggingIn) ? busySkeleton : null
+    iconComponent: barTaskIcon
     active: root.errorText !== "" || root.roleError !== "" || root.urgentCount > 0
     tooltipText: root.errorText !== ""
       ? "Omakanvas — " + root.displayError()
@@ -752,14 +712,13 @@ Panel {
             width: parent.width
             implicitHeight: Math.max(heroIcon.implicitHeight, heroLabels.implicitHeight)
 
-            Text {
+            TaskIcon {
               id: heroIcon
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              text: "\uf0ae"
               color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.display
+              iconSize: Style.font.display
+              busy: root.loading || root.loggingIn
             }
 
             Column {
