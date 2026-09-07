@@ -346,7 +346,8 @@ external tools can process them. Teacher data is read-only; Omakanvas does not
 retrieve individual submissions or change grades. Hidden courses skip
 assignment, announcement, discussion, and conversation requests. The selected credential is read from the desktop keyring
 and is never written to Omarchy's plain-text configuration. Browser login uses
-a new private temporary browser profile with extensions disabled, and asks
+a new private temporary browser profile with extensions disabled and no
+password-save prompts, and asks
 Chromium only for cookies
 applicable to HTTPS origins reached during login. Only a validated
 `canvas_session` value and its Canvas API base URL are retained. Assignment,
