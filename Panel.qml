@@ -42,6 +42,7 @@ Panel {
   property bool loading: false
   property bool loggingIn: false
   property bool authError: false
+  property string pendingToken: ""
   property bool refreshAfterStatus: false
   property var pendingVisibilityCourse: null
   property bool pendingHiddenState: false
@@ -257,6 +258,46 @@ Panel {
   function cancelLogin() {
     if (loginProc.running) loginProc.running = false
     loggingIn = false
+  }
+
+  function displayError() {
+    if (!authError) return errorText
+    if (/no canvas credential|canvas_api_key is empty/i.test(errorText))
+      return "You're not signed in. Sign in with Canvas to load your courses."
+    if (/rejected the browser session/i.test(errorText))
+      return "Your Canvas session expired. Sign in again to continue."
+    if (/rejected the api token/i.test(errorText))
+      return "Canvas rejected the saved API token. Sign in or save a new token."
+    return errorText
+  }
+
+  function saveBaseUrl() {
+    if (urlProc.running) return
+    var url = String(urlField.text || "").trim()
+    if (url === "") {
+      errorText = "Enter your institution's Canvas URL, such as https://canvas.example.edu."
+      return
+    }
+    errorText = ""
+    urlProc.command = [
+      "/usr/share/omarchy/bin/omarchy", "bar", "set",
+      "io.github.erikwb.omakanvas", "baseUrl", url
+    ]
+    urlProc.running = true
+  }
+
+  function saveToken() {
+    if (tokenProc.running || baseUrl === "") return
+    if (String(tokenField.text || "").trim() === "") {
+      errorText = "Paste your Canvas API token first."
+      return
+    }
+    pendingToken = String(tokenField.text)
+    tokenField.text = ""
+    errorText = ""
+    authError = false
+    tokenProc.command = [root.helperPath, "set-token", "--token-stdin"]
+    tokenProc.running = true
   }
 
   function grade(course) {
@@ -508,6 +549,45 @@ Panel {
     }
   }
 
+  Process {
+    id: urlProc
+    stderr: StdioCollector { id: urlErrorOutput; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        var message = String(urlErrorOutput.text || "").trim()
+        root.errorText = message !== "" ? message : "Could not save the Canvas URL."
+        return
+      }
+      root.errorText = ""
+      if (!statusProc.running) root.refreshNow()
+      else root.refreshAfterStatus = true
+    }
+  }
+
+  Process {
+    id: tokenProc
+    stdinEnabled: true
+    environment: ({ "CANVAS_BASE_URL": root.baseUrl })
+    stderr: StdioCollector { id: tokenErrorOutput; waitForEnd: true }
+    onStarted: function() {
+      if (root.pendingToken !== "") tokenProc.write(root.pendingToken + "\n")
+    }
+    onExited: function(exitCode) {
+      root.pendingToken = ""
+      if (exitCode !== 0) {
+        var message = String(tokenErrorOutput.text || "").trim()
+        root.errorText = message !== "" ? message.replace(/^omakanvas:\s*/, "")
+                                        : "Could not save the API token."
+        root.authError = true
+        return
+      }
+      root.errorText = ""
+      root.authError = false
+      if (!statusProc.running) root.refreshNow()
+      else root.refreshAfterStatus = true
+    }
+  }
+
   Timer {
     interval: root.refreshSec * 1000
     running: root.baseUrl !== ""
@@ -546,13 +626,17 @@ Panel {
     text: "\uf0ae"
     active: root.errorText !== "" || root.roleError !== "" || root.urgentCount > 0
     tooltipText: root.errorText !== ""
-      ? "Omakanvas — " + root.errorText
+      ? "Omakanvas — " + root.displayError()
       : (root.roleError !== "" ? "Omakanvas — " + root.roleError
       : "Omakanvas — " + (root.teaching ? "Teaching · " : "Student · ")
         + root.pendingCount + " assignment" + (root.pendingCount === 1 ? "" : "s")
         + " due · right-click to refresh")
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) root.refreshNow()
+      else if (root.authError && !root.loggingIn && root.baseUrl !== "") {
+        root.open()
+        root.startLogin()
+      }
       else root.toggle()
     }
   }
@@ -567,9 +651,10 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(460))
     contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(680))
 
-    PanelKeyCatcher {
-      id: keyCatcher
-      anchors.fill: parent
+      PanelKeyCatcher {
+        id: keyCatcher
+        anchors.fill: parent
+        blocked: urlField.activeFocus || tokenField.activeFocus
       onMoveRequested: function(dx, dy) {
         if (dx !== 0) root.selectPane(root.selectedPane + dx)
         if (dy !== 0)
@@ -721,7 +806,7 @@ Panel {
           Text {
             visible: root.errorText !== ""
             width: parent.width
-            text: root.errorText
+            text: root.displayError()
             textFormat: Text.PlainText
             color: root.urgent
             font.family: root.fontFamily
@@ -739,6 +824,60 @@ Panel {
             fontFamily: root.fontFamily
             fontSize: Style.font.body
             onClicked: root.startLogin()
+          }
+
+          Row {
+            visible: (root.baseUrl === "" || (root.authError && root.errorText !== ""))
+              && !root.loggingIn
+            width: parent.width
+            spacing: Style.space(8)
+
+            TextField {
+              id: urlField
+              width: parent.width - saveUrlButton.width - parent.spacing
+              placeholderText: "https://canvas.example.edu"
+              inputMethodHints: Qt.ImhUrlCharactersOnly
+              foreground: root.foreground
+              onAccepted: root.saveBaseUrl()
+            }
+
+            Button {
+              id: saveUrlButton
+              text: "Save"
+              bordered: true
+              enabled: !urlProc.running
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.saveBaseUrl()
+            }
+          }
+
+          Row {
+            visible: root.baseUrl !== "" && root.authError && root.errorText !== ""
+              && !root.loggingIn
+            width: parent.width
+            spacing: Style.space(8)
+
+            TextField {
+              id: tokenField
+              width: parent.width - saveTokenButton.width - parent.spacing
+              placeholderText: "Canvas API token"
+              password: true
+              foreground: root.foreground
+              onAccepted: root.saveToken()
+            }
+
+            Button {
+              id: saveTokenButton
+              text: "Save"
+              bordered: true
+              enabled: !tokenProc.running
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.saveToken()
+            }
           }
 
           Text {

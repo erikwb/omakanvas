@@ -1286,6 +1286,10 @@ def main() -> int:
         help="read CANVAS_API_KEY instead of the URL-scoped system keyring",
     )
     parser.add_argument(
+        "--token-stdin", action="store_true",
+        help="read the set-token value from stdin instead of prompting",
+    )
+    parser.add_argument(
         "--browser", default="",
         help="Chromium-family browser executable to use for login",
     )
@@ -1306,7 +1310,11 @@ def main() -> int:
     try:
         base_url = resolve_base_url(args.base_url)
         if args.command == "set-token":
-            save_token(base_url, getpass.getpass(f"Canvas API token for {base_url}: "))
+            if args.token_stdin:
+                token = sys.stdin.readline()
+            else:
+                token = getpass.getpass(f"Canvas API token for {base_url}: ")
+            save_token(base_url, token)
             print(f"Canvas token saved in the system keyring for {base_url}.")
             return 0
         if args.command == "login":
