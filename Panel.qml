@@ -43,8 +43,7 @@ Panel {
   property bool loggingIn: false
   property bool authError: false
   property string pendingToken: ""
-  property bool showSetup: false
-  readonly property bool setupVisible: root.showSetup || root.baseUrl === ""
+  readonly property bool needsSetup: root.baseUrl === ""
     || (root.authError && root.errorText !== "")
   property bool refreshAfterStatus: false
   property var pendingVisibilityCourse: null
@@ -609,7 +608,6 @@ Panel {
   onOpenedChanged: if (opened) {
     cursorActive = false
     submittedAssignmentsExpanded = false
-    showSetup = false
     if (panelFlick) panelFlick.contentY = 0
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -819,7 +817,7 @@ Panel {
           }
 
           Button {
-            visible: root.setupVisible && root.baseUrl !== "" && !root.loggingIn
+            visible: root.needsSetup && root.baseUrl !== "" && !root.loggingIn
             width: parent.width
             text: "Sign in with Canvas"
             iconText: "\uf090"
@@ -830,56 +828,48 @@ Panel {
             onClicked: root.startLogin()
           }
 
-          Row {
-            visible: root.setupVisible && !root.loggingIn
+          TextField {
+            id: urlField
+            visible: root.needsSetup && !root.loggingIn
             width: parent.width
-            spacing: Style.space(8)
-
-            TextField {
-              id: urlField
-              width: parent.width - saveUrlButton.width - parent.spacing
-              placeholderText: "https://canvas.example.edu"
-              inputMethodHints: Qt.ImhUrlCharactersOnly
-              foreground: root.foreground
-              onAccepted: root.saveBaseUrl()
-            }
-
-            Button {
-              id: saveUrlButton
-              text: "Save"
-              bordered: true
-              enabled: !urlProc.running
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.saveBaseUrl()
-            }
+            placeholderText: "Canvas URL, such as https://canvas.example.edu"
+            inputMethodHints: Qt.ImhUrlCharactersOnly
+            foreground: root.foreground
+            onAccepted: root.saveBaseUrl()
           }
 
-          Row {
-            visible: root.setupVisible && root.baseUrl !== "" && !root.loggingIn
+          Button {
+            visible: root.needsSetup && !root.loggingIn
             width: parent.width
-            spacing: Style.space(8)
+            text: "Save URL"
+            bordered: true
+            enabled: !urlProc.running
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.saveBaseUrl()
+          }
 
-            TextField {
-              id: tokenField
-              width: parent.width - saveTokenButton.width - parent.spacing
-              placeholderText: "Canvas API token"
-              password: true
-              foreground: root.foreground
-              onAccepted: root.saveToken()
-            }
+          TextField {
+            id: tokenField
+            visible: root.needsSetup && root.baseUrl !== "" && !root.loggingIn
+            width: parent.width
+            placeholderText: "Canvas API token"
+            password: true
+            foreground: root.foreground
+            onAccepted: root.saveToken()
+          }
 
-            Button {
-              id: saveTokenButton
-              text: "Save"
-              bordered: true
-              enabled: !tokenProc.running
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.saveToken()
-            }
+          Button {
+            visible: root.needsSetup && root.baseUrl !== "" && !root.loggingIn
+            width: parent.width
+            text: "Save token"
+            bordered: true
+            enabled: !tokenProc.running
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.saveToken()
           }
 
           Text {
@@ -1674,23 +1664,6 @@ Panel {
             font.pixelSize: Style.font.caption
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
-          }
-
-          Button {
-            width: parent.width
-            text: root.showSetup ? "Hide setup" : "Setup"
-            iconText: root.showSetup ? "\uf078" : "\uf054"
-            bordered: false
-            leftAlign: true
-            foreground: root.dim
-            fontFamily: root.fontFamily
-            fontSize: Style.font.caption
-            iconSize: Style.font.caption
-            horizontalPadding: 0
-            onClicked: {
-              root.showSetup = !root.showSetup
-              if (root.showSetup && panelFlick) panelFlick.contentY = 0
-            }
           }
         }
       }
