@@ -32,11 +32,7 @@ The panel provides three views:
 - A Chromium-family browser (Chromium, Chrome, Brave, Edge, or Vivaldi) for
   browser login, or a Canvas account permitted to create personal access tokens.
 
-Install the keyring tool if it is not already available:
-
-```sh
-omarchy pkg add libsecret
-```
+Install the keyring tool if it is not already available by installing the package "libsecret".
 
 ## Install
 
@@ -410,8 +406,7 @@ Review third-party plugin source before installation.
 - **The browser closes before login completes** — rerun `login`, optionally
   with `--browser /path/to/chromium`, and keep the isolated window open through
   the Canvas dashboard redirect.
-- **`secret-tool` is missing** — install `libsecret` with
-  `omarchy pkg add libsecret`.
+- **`secret-tool` is missing** — install the libsecret omarchy package.
 - **Canvas rejected the API token** — create a new token in Canvas and run
   `set-token` again.
 - **The API-token option is missing in Canvas** — the institution may prohibit
