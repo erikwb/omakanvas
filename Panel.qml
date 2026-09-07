@@ -626,19 +626,29 @@ Panel {
     Item {
       anchors.fill: parent
 
-      Column {
+      Text {
         anchors.centerIn: parent
-        spacing: 3
+        text: "\uf0ae"
+        font.family: root.fontFamily
+        font.pixelSize: Style.bar.iconFont
+        color: (button.active && button.useActiveColor) ? button.activeColor : root.foreground
+      }
+
+      Column {
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 2
+        spacing: 2
 
         Repeater {
-          model: [16, 12, 14]
+          model: [9, 7, 8]
           Rectangle {
             required property real modelData
             required property int index
             width: modelData
-            height: 3
-            radius: 1.5
-            color: root.alpha(root.foreground, 0.25)
+            height: 2
+            radius: 1
+            color: root.alpha(root.foreground, 0.3)
 
             Rectangle {
               anchors.left: parent.left
@@ -650,9 +660,9 @@ Panel {
 
               SequentialAnimation on width {
                 loops: Animation.Infinite
-                PauseAnimation { duration: index * 280 }
-                NumberAnimation { from: 0; to: modelData; duration: 420; easing.type: Easing.InOutQuad }
-                PauseAnimation { duration: (2 - index) * 280 + 240 }
+                PauseAnimation { duration: index * 250 }
+                NumberAnimation { from: 0; to: modelData; duration: 350; easing.type: Easing.InOutQuad }
+                PauseAnimation { duration: (2 - index) * 250 + 200 }
               }
             }
           }
