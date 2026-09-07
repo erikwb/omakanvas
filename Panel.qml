@@ -1687,7 +1687,10 @@ Panel {
             fontSize: Style.font.caption
             iconSize: Style.font.caption
             horizontalPadding: 0
-            onClicked: root.showSetup = !root.showSetup
+            onClicked: {
+              root.showSetup = !root.showSetup
+              if (root.showSetup && panelFlick) panelFlick.contentY = 0
+            }
           }
         }
       }
