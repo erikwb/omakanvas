@@ -38,7 +38,8 @@ class AnnouncementClient:
 
     def __init__(self, topics=None, error=None, conversations=None,
                  conversation_error=None, discussions=None,
-                 discussion_error=None):
+                 discussion_error=None, enrollments=None):
+        self.enrollments = enrollments if enrollments is not None else [{"type": "student"}]
         self.topics = topics if topics is not None else []
         self.error = error
         self.conversation_records = conversations if conversations is not None else []
@@ -53,7 +54,7 @@ class AnnouncementClient:
         self.requested_params.append(params)
         if path == "api/v1/courses":
             return [{"id": 7, "name": "Biology", "course_code": "BIO101",
-                     "enrollments": [{"type": "student"}]}]
+                     "enrollments": self.enrollments}]
         if path == "api/v1/courses/7/discussion_topics":
             if (params or {}).get("only_announcements") == "true":
                 if self.error is not None:
@@ -962,16 +963,14 @@ class CanvasTests(unittest.TestCase):
         )
         self.assertEqual(announcement_request["only_announcements"], "true")
 
-    def test_announcement_excerpt_strips_markup_and_truncates(self):
+    def test_plain_text_strips_markup_without_truncating(self):
         self.assertEqual(
-            module.plain_text_excerpt("<p>Hello <b>world</b></p>"),
+            module.plain_text("<p>Hello <b>world</b></p>"),
             "Hello world",
         )
-        self.assertEqual(module.plain_text_excerpt(None), "")
+        self.assertEqual(module.plain_text(None), "")
         long_text = "word " * 100
-        excerpt = module.plain_text_excerpt(long_text)
-        self.assertLessEqual(len(excerpt), module.ANNOUNCEMENT_EXCERPT_LENGTH)
-        self.assertTrue(excerpt.endswith("…"))
+        self.assertEqual(module.plain_text(long_text), long_text.strip())
 
     def test_announcement_with_external_url_is_not_linkable(self):
         client = AnnouncementClient(topics=[
@@ -1181,28 +1180,37 @@ class SnapshotTests(unittest.TestCase):
 
     def test_fetch_persists_all_records_and_full_bodies_in_both_output_modes(self):
         body = "A complete announcement or discussion body. " * 20
+        participants = [{"id": i, "name": f"Participant {i}"} for i in range(25)]
         records = [{"id": i, "title": f"Topic {i}", "message": f"<p>{body}</p>"}
                    for i in range(5)]
         conversations = [{"id": i, "subject": f"Conversation {i}",
-                          "workflow_state": "read", "last_message": body}
+                          "workflow_state": "read", "last_message": body,
+                          "participants": participants}
                          for i in range(5)]
         for as_json in (True, False):
             with self.subTest(as_json=as_json), TemporaryDirectory() as directory:
                 path = Path(directory) / "omakanvas/latest.json"
                 client = AnnouncementClient(topics=records, discussions=records,
-                                            conversations=conversations)
+                                            conversations=conversations,
+                                            enrollments=[{"type": "student"}, {"type": "teacher"}])
                 status, stdout, stderr = self.fetch(client, path, as_json)
                 self.assertEqual((status, stderr), (0, ""))
                 data = json.loads(path.read_text())
                 self.assertEqual(data["base_url"], "https://canvas.test")
                 self.assertTrue(data["fetched_at"])
-                course = data["roles"]["student"]["courses"][0]
-                for field in ("announcements", "discussions", "conversations"):
-                    self.assertEqual(len(course[field]), 5)
-                self.assertEqual(course["announcements"][0]["body"], body.strip())
-                self.assertEqual(course["discussions"][0]["body"], body.strip())
-                self.assertEqual(course["conversations"][0]["last_message_body"], body.strip())
-                self.assertLess(len(course["announcements"][0]["excerpt"]), len(body))
+                for role in ("student", "teacher"):
+                    course = data["roles"][role]["courses"][0]
+                    for field in ("announcements", "discussions", "conversations"):
+                        self.assertEqual(len(course[field]), 5)
+                        for item in course[field]:
+                            text_fields = (
+                                ("last_message", "last_message_body")
+                                if field == "conversations" else ("excerpt", "body")
+                            )
+                            for text_field in text_fields:
+                                self.assertEqual(item[text_field], body.strip())
+                            if field == "conversations":
+                                self.assertEqual(item["participants"], participants)
                 self.assertNotIn("secret-not-for-the-snapshot", path.read_text())
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
                 self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)

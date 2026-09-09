@@ -47,8 +47,6 @@ BROWSER_CANDIDATES = (
     "vivaldi-stable",
 )
 RECENT_ITEM_LIMIT = 3
-ANNOUNCEMENT_EXCERPT_LENGTH = 180
-MAX_CONVERSATION_PARTICIPANTS = 10
 
 
 class CrossOriginRequestError(RuntimeError):
@@ -945,13 +943,6 @@ def plain_text(value: Any) -> str:
     return sanitize_text(re.sub(r"<[^<>]*>", " ", str(value or "")))
 
 
-def plain_text_excerpt(value: Any, limit: int = ANNOUNCEMENT_EXCERPT_LENGTH) -> str:
-    text = plain_text(value)
-    if len(text) > limit:
-        text = text[: max(0, limit - 1)].rstrip() + "…"
-    return text
-
-
 def collect_announcements(
     client: CanvasClient,
     course_id: Any,
@@ -984,7 +975,7 @@ def collect_announcements(
                 "title": sanitize_text(topic.get("title"), "Untitled announcement"),
                 "posted_at": posted.isoformat() if posted is not None else None,
                 "author": author_name or None,
-                "excerpt": plain_text_excerpt(topic.get("message")),
+                "excerpt": plain_text(topic.get("message")),
                 "body": plain_text(topic.get("message")),
                 "html_url": validated_canvas_web_url(
                     client.base_url, topic.get("html_url"),
@@ -1041,7 +1032,7 @@ def collect_discussions(
                 "reply_count": reply_count,
                 "pinned": topic.get("pinned") is True,
                 "locked": topic.get("locked") is True,
-                "excerpt": plain_text_excerpt(topic.get("message")),
+                "excerpt": plain_text(topic.get("message")),
                 "body": plain_text(topic.get("message")),
                 "html_url": validated_canvas_web_url(
                     client.base_url, topic.get("html_url"),
@@ -1084,8 +1075,6 @@ def collect_conversations(
                 "id": participant.get("id"),
                 "name": sanitize_text(participant.get("name"), "Unknown"),
             })
-            if len(participants) >= MAX_CONVERSATION_PARTICIPANTS:
-                break
         message_count = record.get("message_count")
         if not isinstance(message_count, int) or isinstance(message_count, bool):
             message_count = 0
@@ -1097,7 +1086,7 @@ def collect_conversations(
                 "workflow_state": record.get("workflow_state"),
                 "unread": record.get("workflow_state") == "unread",
                 "last_message_at": sent_at.isoformat() if sent_at is not None else None,
-                "last_message": plain_text_excerpt(record.get("last_message")),
+                "last_message": plain_text(record.get("last_message")),
                 "last_message_body": plain_text(record.get("last_message")),
                 "message_count": message_count,
                 "starred": record.get("starred") is True,
