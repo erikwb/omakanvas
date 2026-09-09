@@ -31,6 +31,8 @@ BROWSER_SESSION_VERSION = 1
 PAYLOAD_VERSION = 5
 VISIBILITY_VERSION = 1
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024
 MAX_DEVTOOLS_MESSAGE_BYTES = 8 * 1024 * 1024
 MAX_PAGES = 200
 MAX_RECORDS = 20_000
@@ -47,8 +49,6 @@ BROWSER_CANDIDATES = (
     "vivaldi-stable",
 )
 RECENT_ITEM_LIMIT = 3
-ANNOUNCEMENT_EXCERPT_LENGTH = 180
-MAX_CONVERSATION_PARTICIPANTS = 10
 
 
 class CrossOriginRequestError(RuntimeError):
@@ -273,18 +273,33 @@ def set_course_hidden(
     write_private_json(path, data)
 
 
-def write_private_json(path: Path, data: dict[str, Any]) -> None:
+def write_private_json(
+    path: Path, data: dict[str, Any], *, max_bytes: int | None = None,
+) -> None:
     """Publish a complete owner-readable snapshot without exposing partial JSON."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
-    serialized = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
     )
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            output.write(serialized)
+        with os.fdopen(descriptor, "wb") as output:
+            # Count UTF-8 bytes, including the final newline, before each write.
+            # Stream into the temporary file so oversized JSON is never published
+            # or assembled into another full-size string in memory.
+            total_bytes = 1
+            encoder = json.JSONEncoder(indent=2, ensure_ascii=False)
+            for chunk in encoder.iterencode(data):
+                encoded = chunk.encode("utf-8")
+                total_bytes += len(encoded)
+                if max_bytes is not None and total_bytes > max_bytes:
+                    raise RuntimeError(
+                        "Canvas snapshot exceeded the size limit "
+                        f"({max_bytes / (1024 * 1024):g} MiB)"
+                    )
+                output.write(encoded)
+            output.write(b"\n")
             output.flush()
             os.fsync(output.fileno())
         os.replace(temporary, path)
@@ -808,6 +823,7 @@ class CanvasClient:
         self.opener = opener or build_opener(SameOriginRedirectHandler(self.base_url))
         self.clock = clock or time.monotonic
         self.deadline = self.clock() + MAX_FETCH_SECONDS
+        self.downloaded_bytes = 0
 
     def _request_timeout(self) -> float:
         remaining = self.deadline - self.clock()
@@ -825,13 +841,23 @@ class CanvasClient:
 
     def _get_json(self, url: str) -> tuple[Any, Any]:
         _require_same_origin(self.base_url, url)
+        remaining_bytes = MAX_DOWNLOAD_BYTES - self.downloaded_bytes
+        download_limit_error = (
+            "Canvas refresh exceeded the total download size limit "
+            f"({MAX_DOWNLOAD_BYTES / (1024 * 1024):g} MiB)"
+        )
+        if remaining_bytes <= 0:
+            raise RuntimeError(download_limit_error)
         headers = {"Accept": "application/json", **self.auth_headers}
         request = Request(url, headers=headers)
         try:
             with self.opener.open(request, timeout=self._request_timeout()) as response:
-                raw = response.read(MAX_RESPONSE_BYTES + 1)
+                raw = response.read(min(MAX_RESPONSE_BYTES, remaining_bytes) + 1)
+                self.downloaded_bytes += len(raw)
                 if len(raw) > MAX_RESPONSE_BYTES:
                     raise RuntimeError("Canvas API response exceeded the size limit")
+                if self.downloaded_bytes > MAX_DOWNLOAD_BYTES:
+                    raise RuntimeError(download_limit_error)
                 try:
                     payload = json.loads(raw.decode("utf-8"))
                 except json.JSONDecodeError as error:
@@ -945,13 +971,6 @@ def plain_text(value: Any) -> str:
     return sanitize_text(re.sub(r"<[^<>]*>", " ", str(value or "")))
 
 
-def plain_text_excerpt(value: Any, limit: int = ANNOUNCEMENT_EXCERPT_LENGTH) -> str:
-    text = plain_text(value)
-    if len(text) > limit:
-        text = text[: max(0, limit - 1)].rstrip() + "…"
-    return text
-
-
 def collect_announcements(
     client: CanvasClient,
     course_id: Any,
@@ -984,7 +1003,7 @@ def collect_announcements(
                 "title": sanitize_text(topic.get("title"), "Untitled announcement"),
                 "posted_at": posted.isoformat() if posted is not None else None,
                 "author": author_name or None,
-                "excerpt": plain_text_excerpt(topic.get("message")),
+                "excerpt": plain_text(topic.get("message")),
                 "body": plain_text(topic.get("message")),
                 "html_url": validated_canvas_web_url(
                     client.base_url, topic.get("html_url"),
@@ -1041,7 +1060,7 @@ def collect_discussions(
                 "reply_count": reply_count,
                 "pinned": topic.get("pinned") is True,
                 "locked": topic.get("locked") is True,
-                "excerpt": plain_text_excerpt(topic.get("message")),
+                "excerpt": plain_text(topic.get("message")),
                 "body": plain_text(topic.get("message")),
                 "html_url": validated_canvas_web_url(
                     client.base_url, topic.get("html_url"),
@@ -1084,8 +1103,6 @@ def collect_conversations(
                 "id": participant.get("id"),
                 "name": sanitize_text(participant.get("name"), "Unknown"),
             })
-            if len(participants) >= MAX_CONVERSATION_PARTICIPANTS:
-                break
         message_count = record.get("message_count")
         if not isinstance(message_count, int) or isinstance(message_count, bool):
             message_count = 0
@@ -1097,7 +1114,7 @@ def collect_conversations(
                 "workflow_state": record.get("workflow_state"),
                 "unread": record.get("workflow_state") == "unread",
                 "last_message_at": sent_at.isoformat() if sent_at is not None else None,
-                "last_message": plain_text_excerpt(record.get("last_message")),
+                "last_message": plain_text(record.get("last_message")),
                 "last_message_body": plain_text(record.get("last_message")),
                 "message_count": message_count,
                 "starred": record.get("starred") is True,
@@ -1398,9 +1415,10 @@ def main() -> int:
         )
         hidden_ids = set(hidden_courses_for(base_url))
         data = collect(client, max(1, args.days), hidden_course_ids=hidden_ids)
-        write_private_json(data_path(), data)
+        write_private_json(data_path(), data, max_bytes=MAX_SNAPSHOT_BYTES)
         if args.as_json:
-            print(json.dumps(data, indent=2, ensure_ascii=False))
+            json.dump(data, sys.stdout, indent=2, ensure_ascii=False)
+            print()
         else:
             print_terminal(data)
         return 0
