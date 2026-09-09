@@ -802,6 +802,36 @@ class CanvasTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "repeated"):
             client.get_all("api/v1/courses")
 
+    def test_download_budget_spans_pages_and_endpoints(self):
+        first = FakeResponse([{"id": 1}], link='</api/v1/courses?page=2>; rel="next"')
+        second = FakeResponse([{"id": 2}])
+        third = FakeResponse({"id": 3})
+        budget = sum(len(response.raw) for response in (first, second, third))
+        opener = FakeOpener(first, second, third)
+        client = module.CanvasClient("https://canvas.test", "token", opener=opener)
+        with patch.object(module, "MAX_DOWNLOAD_BYTES", budget):
+            self.assertEqual(client.get_all("api/v1/courses"), [{"id": 1}, {"id": 2}])
+            self.assertEqual(client.get_object("api/v1/users/self"), {"id": 3})
+            self.assertEqual(client.downloaded_bytes, budget)
+            with self.assertRaisesRegex(RuntimeError, "total download size limit"):
+                client.get_all("api/v1/conversations")
+        self.assertEqual(len(opener.requests), 3)
+
+    def test_download_budget_bounds_read_and_rejects_before_parsing(self):
+        first = FakeResponse([])
+        second = FakeResponse([], raw=b" " * 100 + b"[]")
+        second.read = Mock(wraps=second.read)
+        client = module.CanvasClient(
+            "https://canvas.test", "token", opener=FakeOpener(first, second),
+        )
+        with patch.object(module, "MAX_DOWNLOAD_BYTES", len(first.raw) + 5):
+            self.assertEqual(client.get_all("api/v1/courses"), [])
+            with patch.object(module.json, "loads") as parse, \
+                 self.assertRaisesRegex(RuntimeError, "total download size limit"):
+                client.get_all("api/v1/conversations")
+            parse.assert_not_called()
+        second.read.assert_called_once_with(6)
+
     def test_rejects_too_many_api_records(self):
         with patch.object(module, "MAX_RECORDS", 1):
             client = module.CanvasClient(
@@ -1238,6 +1268,49 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(stdout, "")
             self.assertIn("disk unavailable", stderr)
             self.assertEqual(path.read_text(), '{"previous": true}\n')
+            self.assertEqual(list(path.parent.glob(".latest.json.*.tmp")), [])
+
+    def test_download_limit_failure_in_second_role_preserves_snapshot(self):
+        for as_json in (True, False):
+            with self.subTest(as_json=as_json), TemporaryDirectory() as directory:
+                path = Path(directory) / "latest.json"
+                previous = '{"previous": true}\n'
+                path.write_text(previous)
+                client = module.CanvasClient(
+                    "https://canvas.test", "token",
+                    opener=FakeOpener(FakeResponse([]), FakeResponse([])),
+                )
+                with patch.object(module, "MAX_DOWNLOAD_BYTES", 3):
+                    status, stdout, stderr = self.fetch(client, path, as_json)
+                self.assertEqual(status, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("total download size limit", stderr)
+                self.assertEqual(path.read_text(), previous)
+
+    def test_snapshot_limit_failure_preserves_snapshot_in_both_output_modes(self):
+        for as_json in (True, False):
+            with self.subTest(as_json=as_json), TemporaryDirectory() as directory:
+                path = Path(directory) / "latest.json"
+                previous = '{"previous": true}\n'
+                path.write_text(previous)
+                with patch.object(module, "MAX_SNAPSHOT_BYTES", 100):
+                    status, stdout, stderr = self.fetch(AnnouncementClient(), path, as_json)
+                self.assertEqual(status, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("snapshot exceeded the size limit", stderr)
+                self.assertEqual(path.read_text(), previous)
+                self.assertEqual(list(path.parent.glob(".latest.json.*.tmp")), [])
+
+    def test_snapshot_limit_counts_utf8_bytes_and_final_newline(self):
+        data = {"body": "漢字🙂"}
+        serialized = (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "latest.json"
+            module.write_private_json(path, data, max_bytes=len(serialized))
+            self.assertEqual(path.read_bytes(), serialized)
+            with self.assertRaisesRegex(RuntimeError, "snapshot exceeded the size limit"):
+                module.write_private_json(path, data, max_bytes=len(serialized) - 1)
+            self.assertEqual(path.read_bytes(), serialized)
             self.assertEqual(list(path.parent.glob(".latest.json.*.tmp")), [])
 
     def test_replacement_is_private_and_does_not_follow_destination_symlinks(self):
