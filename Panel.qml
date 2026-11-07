@@ -623,11 +623,16 @@ Panel {
 
   Component {
     id: barTaskIcon
-    TaskIcon {
-      anchors.fill: parent
-      iconSize: button.fontSize
-      color: (button.active && button.useActiveColor) ? button.activeColor : root.foreground
-      busy: root.loading || root.loggingIn
+    // The bar sizes this empty wrapper to its icon canvas, measures the
+    // painted bounds of the shapes inside it, and scales them to fit.
+    Item {
+      TaskIcon {
+        x: (parent.width - width) / 2
+        y: (parent.height - height) / 2
+        iconSize: button.iconSize
+        color: (button.active && button.useActiveColor) ? button.activeColor : root.foreground
+        busy: root.loading || root.loggingIn
+      }
     }
   }
 
