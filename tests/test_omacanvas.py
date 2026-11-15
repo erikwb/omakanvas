@@ -613,6 +613,142 @@ class CanvasTests(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_password_manager_login_launches_with_extensions(self):
+        seen = {}
+
+        def fake_popen(args, **kwargs):
+            seen["args"] = args
+            return Mock()
+
+        with patch.object(module.subprocess, "Popen", side_effect=fake_popen):
+            _process, connection = module._start_browser(
+                "/usr/bin/chromium", Path("/tmp/omakanvas-profile"),
+                "https://canvas.example.edu", password_manager=True,
+            )
+        try:
+            self.assertNotIn("--disable-extensions", seen["args"])
+            self.assertIn("--disable-save-password-bubble", seen["args"])
+        finally:
+            connection.close()
+
+    def test_password_manager_profile_persists_without_cookies(self):
+        with TemporaryDirectory() as directory:
+            home = Path(directory)
+            hosts = home / "config/chromium/NativeMessagingHosts"
+            hosts.mkdir(parents=True)
+            manifest = {"name": "com.1password.1password", "type": "stdio",
+                        "path": "/opt/1Password/1Password-BrowserSupport"}
+            (hosts / "com.1password.1password.json").write_text(json.dumps(manifest))
+            with patch.dict(os.environ, {"XDG_DATA_HOME": str(home / "data"),
+                                         "XDG_CONFIG_HOME": str(home / "config")}):
+                with module._login_profile("/usr/lib/chromium/chromium", True) as profile:
+                    self.assertEqual(profile, home / "data/omakanvas/login-profiles/chromium")
+                    (profile / "Default").mkdir()
+                    (profile / "Default/Cookies").write_text("stale session")
+                    (profile / "Default/Extensions").mkdir()
+                with module._login_profile("/usr/lib/chromium/chromium", True) as again:
+                    self.assertEqual(again, profile)
+            self.assertFalse((profile / "Default/Cookies").exists())
+            self.assertTrue((profile / "Default/Extensions").is_dir())
+            copied = profile / "NativeMessagingHosts/com.1password.1password.json"
+            self.assertEqual(json.loads(copied.read_text()), manifest)
+            for path in (profile.parent, profile, copied.parent):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(copied.stat().st_mode), 0o600)
+
+    def test_password_manager_profile_skips_missing_or_foreign_native_hosts(self):
+        with TemporaryDirectory() as directory:
+            home = Path(directory)
+            hosts = home / "config/chromium/NativeMessagingHosts"
+            hosts.mkdir(parents=True)
+            (hosts / "com.1password.1password.json").write_text('{"name": "other.host"}')
+            with patch.dict(os.environ, {"XDG_DATA_HOME": str(home / "data"),
+                                         "XDG_CONFIG_HOME": str(home / "config")}):
+                with module._login_profile("/usr/bin/chromium", True) as profile:
+                    self.assertFalse((profile / "NativeMessagingHosts").exists())
+
+    def test_temporary_login_profile_is_removed(self):
+        with module._login_profile("/usr/bin/chromium", False) as profile:
+            self.assertEqual(stat.S_IMODE(profile.stat().st_mode), 0o700)
+            self.assertNotIn("login-profiles", str(profile))
+        self.assertFalse(profile.exists())
+
+    def test_password_manager_login_clears_cookies_before_closing(self):
+        for authenticated in (True, False):
+            with self.subTest(authenticated=authenticated), TemporaryDirectory() as directory:
+                events = []
+
+                class FakeProcess:
+                    def poll(self):
+                        return None
+
+                    def terminate(self):
+                        events.append("terminate")
+
+                    def wait(self, timeout=None):
+                        return 0
+
+                class FakeConnection:
+                    def command(self, method, params=None, session_id=None):
+                        events.append(method)
+                        if method == "Target.getTargets":
+                            return {"targetInfos": [{
+                                "type": "page", "targetId": "target-1",
+                                "url": "https://canvas.example.edu/login",
+                            }]}
+                        if method == "Target.attachToTarget":
+                            return {"sessionId": "session-1"}
+                        if method == "Network.getCookies":
+                            if not authenticated:
+                                raise RuntimeError("Browser closed the DevTools connection")
+                            return {"cookies": [{
+                                "name": "canvas_session", "value": "abc123",
+                                "domain": "canvas.example.edu", "path": "/", "secure": True,
+                            }]}
+                        return {}
+
+                    def close(self):
+                        events.append("close")
+
+                with patch.dict(os.environ, {"XDG_DATA_HOME": directory,
+                                             "XDG_CONFIG_HOME": directory}), \
+                     patch.object(module, "browser_path", return_value="/usr/bin/chromium"), \
+                     patch.object(module, "_start_browser",
+                                  return_value=(FakeProcess(), FakeConnection())) as start, \
+                     patch.object(module, "_browser_session_is_authenticated",
+                                  return_value=True):
+                    if authenticated:
+                        session = module.browser_login(
+                            "https://canvas.example.edu", password_manager=True,
+                        )
+                        self.assertEqual(session.value, "abc123")
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "DevTools"):
+                            module.browser_login(
+                                "https://canvas.example.edu", password_manager=True,
+                            )
+                self.assertTrue(start.call_args.args[3])
+                self.assertEqual(events[-3:], ["Storage.clearCookies", "close", "terminate"])
+
+    def test_default_login_does_not_clear_cookies(self):
+        commands = []
+
+        class FakeConnection:
+            def command(self, method, params=None, session_id=None):
+                commands.append(method)
+                raise RuntimeError("Browser did not create a Canvas login page")
+
+            def close(self):
+                pass
+
+        process = Mock()
+        process.poll.return_value = 0
+        with patch.object(module, "browser_path", return_value="/usr/bin/chromium"), \
+             patch.object(module, "_start_browser", return_value=(process, FakeConnection())):
+            with self.assertRaises(RuntimeError):
+                module.browser_login("https://canvas.example.edu")
+        self.assertNotIn("Storage.clearCookies", commands)
+
     def test_browser_login_restores_sigterm_handler_on_failure(self):
         before = module.signal.getsignal(module.signal.SIGTERM)
         with patch.object(
