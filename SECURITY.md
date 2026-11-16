@@ -53,7 +53,7 @@ installation. Browser login uses a private temporary Chromium profile, a
 process-private debugging pipe, and retains only the validated Canvas session
 value and API base URL.
 Fetched course data, including grades, announcement/discussion bodies,
-latest conversation messages, and module bodies, is saved separately in
+complete conversation threads, and module bodies, is saved separately in
 `$XDG_DATA_HOME/omakanvas/latest.json` (defaulting to
 `~/.local/share/omakanvas/latest.json`). The directory uses mode `0700` and
 the file uses `0600`; it contains no authentication credentials. Other programs

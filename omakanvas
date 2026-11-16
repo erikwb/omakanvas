@@ -83,6 +83,10 @@ class CanvasNotFoundError(RuntimeError):
     """Raised when Canvas no longer exposes a referenced resource."""
 
 
+class CanvasRequestError(RuntimeError):
+    """Raised when Canvas answers a single request with an HTTP error status."""
+
+
 class BrowserSession(NamedTuple):
     base_url: str
     value: str
@@ -961,12 +965,14 @@ class CanvasClient:
                 ) from error
             if error.code == 404:
                 raise CanvasNotFoundError("Canvas resource was not found") from error
-            raise RuntimeError(f"Canvas API returned HTTP {error.code}") from error
+            raise CanvasRequestError(f"Canvas API returned HTTP {error.code}") from error
         except (URLError, TimeoutError, UnicodeDecodeError) as error:
             raise RuntimeError(f"Could not reach Canvas: {error}") from error
 
-    def get_object(self, path: str) -> dict[str, Any]:
+    def get_object(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         url = urljoin(self.base_url, path.lstrip("/"))
+        if params:
+            url += "?" + urlencode(params, doseq=True)
         payload, _headers = self._get_json(url)
         if not isinstance(payload, dict):
             raise RuntimeError("Canvas API returned an unexpected response format")
@@ -1355,6 +1361,7 @@ def collect_announcements(
                 "author": author_name or None,
                 "excerpt": plain_text(topic.get("message")),
                 "body": plain_text(topic.get("message")),
+                "body_html": str(topic.get("message") or ""),
                 "html_url": validated_canvas_web_url(
                     client.base_url, topic.get("html_url"),
                 ),
@@ -1412,6 +1419,7 @@ def collect_discussions(
                 "locked": topic.get("locked") is True,
                 "excerpt": plain_text(topic.get("message")),
                 "body": plain_text(topic.get("message")),
+                "body_html": str(topic.get("message") or ""),
                 "html_url": validated_canvas_web_url(
                     client.base_url, topic.get("html_url"),
                 ),
@@ -1421,15 +1429,89 @@ def collect_discussions(
     return [item for _, item in scored]
 
 
+class ConversationThreads:
+    """Fetch complete conversation threads, reusing unchanged ones from the last snapshot."""
+
+    def __init__(self, client: CanvasClient, previous: dict[str, Any] | None = None):
+        self.client = client
+        self.threads: dict[str, tuple[list[dict[str, Any]], str]] = {}
+        self.previous: dict[str, dict[str, Any]] = {}
+        if (
+            not isinstance(previous, dict)
+            or previous.get("schema_version") != PAYLOAD_VERSION
+            or previous.get("base_url") != normalize_instance_url(client.base_url)
+        ):
+            return
+        for role in (previous.get("roles") or {}).values():
+            for course in (role or {}).get("courses") or []:
+                for conversation in (course or {}).get("conversations") or []:
+                    if (
+                        isinstance(conversation, dict)
+                        and isinstance(conversation.get("messages"), list)
+                        and conversation["messages"]
+                        and not conversation.get("fetch_error")
+                    ):
+                        self.previous[str(conversation.get("id"))] = conversation
+
+    def messages(
+        self, record: dict[str, Any], message_count: int,
+    ) -> tuple[list[dict[str, Any]], str]:
+        key = canvas_id(record.get("id"))
+        if key in self.threads:
+            return self.threads[key]
+        earlier = self.previous.get(key)
+        if (
+            earlier is not None
+            and earlier.get("last_message_at") == iso_time(record.get("last_message_at"))
+            and earlier.get("message_count") == message_count
+        ):
+            self.threads[key] = earlier["messages"], ""
+            return self.threads[key]
+        messages: list[dict[str, Any]] = []
+        fetch_error = ""
+        try:
+            thread = self.client.get_object(
+                f"api/v1/conversations/{key}", {"auto_mark_as_read": "false"},
+            )
+            for message in thread.get("messages") or []:
+                if not isinstance(message, dict):
+                    continue
+                messages.append({
+                    "id": message.get("id"),
+                    "created_at": iso_time(message.get("created_at")),
+                    "author_id": message.get("author_id"),
+                    "body": str(message.get("body") or ""),
+                    "generated": message.get("generated") is True,
+                    # Do not persist expiring signed attachment URLs.
+                    "attachments": [
+                        {field: attachment.get(field) for field in (
+                            "id", "display_name", "filename", "content-type", "size",
+                        )}
+                        for attachment in message.get("attachments") or []
+                        if isinstance(attachment, dict)
+                    ],
+                })
+        except (CanvasPermissionError, CanvasNotFoundError, CanvasRequestError) as error:
+            # One unavailable thread keeps its preview; it does not fail the refresh.
+            fetch_error = str(error)
+        self.threads[key] = messages, fetch_error
+        return self.threads[key]
+
+
 def collect_conversations(
     client: CanvasClient,
     course_id: Any,
+    threads: ConversationThreads | None = None,
 ) -> list[dict[str, Any]]:
     """Return every conversation for a course, newest first.
 
     The full list is kept in the payload so external tools can process it;
-    the panel displays only unread conversations.
+    the panel displays only unread conversations. The index endpoint only
+    returns a shortened last_message preview, so each conversation's complete
+    message thread is fetched separately without marking it as read.
     """
+    if threads is None:
+        threads = ConversationThreads(client)
     try:
         records = client.get_all(
             "api/v1/conversations",
@@ -1456,6 +1538,8 @@ def collect_conversations(
         message_count = record.get("message_count")
         if not isinstance(message_count, int) or isinstance(message_count, bool):
             message_count = 0
+        messages, fetch_error = threads.messages(record, message_count)
+        latest_body = messages[0]["body"] if messages else plain_text(record.get("last_message"))
         scored.append((
             sent_at or datetime.min.replace(tzinfo=timezone.utc),
             {
@@ -1465,7 +1549,9 @@ def collect_conversations(
                 "unread": record.get("workflow_state") == "unread",
                 "last_message_at": sent_at.isoformat() if sent_at is not None else None,
                 "last_message": plain_text(record.get("last_message")),
-                "last_message_body": plain_text(record.get("last_message")),
+                "last_message_body": latest_body,
+                "messages": messages,
+                "fetch_error": fetch_error,
                 "message_count": message_count,
                 "starred": record.get("starred") is True,
                 "participants": participants,
@@ -1493,6 +1579,7 @@ def collect_role(
     now: datetime | None = None,
     hidden_course_ids: set[str] | None = None,
     module_collector: ModuleCollector | None = None,
+    conversation_threads: ConversationThreads | None = None,
 ) -> dict[str, Any]:
     if role not in {"student", "teacher"}:
         raise ValueError(f"Unsupported Canvas role: {role}")
@@ -1561,7 +1648,7 @@ def collect_role(
             })
         upcoming.sort(key=lambda item: item["due_at"])
         announcements = collect_announcements(client, course["id"])
-        conversations = collect_conversations(client, course["id"])
+        conversations = collect_conversations(client, course["id"], conversation_threads)
         discussions = collect_discussions(client, course["id"])
         modules, modules_error = module_collector.collect(course["id"])
         current_score = enrollment.get("computed_current_score") if enrollment else None
@@ -1602,14 +1689,17 @@ def collect(
     days: int = 14,
     now: datetime | None = None,
     hidden_course_ids: set[str] | None = None,
+    previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     roles = {}
     module_collector = ModuleCollector(client)
+    conversation_threads = ConversationThreads(client, previous)
     for role in ("student", "teacher"):
         try:
             roles[role] = collect_role(
                 client, role, days, now, hidden_course_ids, module_collector,
+                conversation_threads,
             )
         except CanvasPermissionError as error:
             roles[role] = empty_role_payload(str(error))
@@ -1792,7 +1882,13 @@ def main() -> int:
             else CanvasClient(credential_base_url, secret)
         )
         hidden_ids = set(hidden_courses_for(base_url))
-        data = collect(client, max(1, args.days), hidden_course_ids=hidden_ids)
+        try:
+            previous = json.loads(data_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            previous = None
+        data = collect(
+            client, max(1, args.days), hidden_course_ids=hidden_ids, previous=previous,
+        )
         write_private_json(data_path(), data, max_bytes=MAX_SNAPSHOT_BYTES)
         if args.as_json:
             json.dump(data, sys.stdout, indent=2, ensure_ascii=False)
