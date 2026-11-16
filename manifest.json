@@ -19,7 +19,8 @@
     "defaults": {
       "baseUrl": "",
       "days": 14,
-      "refreshIntervalSec": 3600
+      "refreshIntervalSec": 3600,
+      "passwordManagerLogin": false
     },
     "schema": [
       {
@@ -46,6 +47,13 @@
         "max": 86400,
         "step": 900,
         "defaultValue": 3600
+      },
+      {
+        "key": "passwordManagerLogin",
+        "type": "boolean",
+        "label": "Use a password manager when signing in",
+        "defaultValue": false,
+        "description": "Sign in with a dedicated browser profile that keeps extensions such as 1Password. Install the extension there once; Canvas cookies are cleared after each sign-in."
       }
     ]
   }

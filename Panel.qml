@@ -22,6 +22,7 @@ Panel {
   readonly property string configurationMessage: "Set your Canvas URL with omarchy bar set, then run the helper's login command or save an API token."
   readonly property int days: boundedSetting("days", 14, 1, 60)
   readonly property int refreshSec: boundedSetting("refreshIntervalSec", 3600, 300, 86400)
+  readonly property bool passwordManagerLogin: setting("passwordManagerLogin", false) === true
 
   readonly property var paneNames: ["Overview", "Assignments", "Courses"]
   property int selectedPane: 0
@@ -532,6 +533,7 @@ Panel {
   Process {
     id: loginProc
     command: [root.helperPath, "login"]
+      .concat(root.passwordManagerLogin ? ["--password-manager"] : [])
     environment: ({ "CANVAS_BASE_URL": root.baseUrl })
     stderr: StdioCollector { id: loginErrorOutput; waitForEnd: true }
     onExited: function(exitCode) {

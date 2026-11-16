@@ -95,7 +95,8 @@ by the isolated login window and accepts a `canvas_session` cookie only after
 that origin successfully answers Canvas's `/api/v1/users/self` endpoint. It
 stores the validated API base URL alongside the cookie in the desktop keyring,
 then closes the isolated window. It does not read cookies from the normal
-browser profile or retain the temporary profile.
+browser profile or retain the temporary profile, except in the opt-in
+password-manager mode described below.
 
 The browser session is used for read-only API requests and takes precedence if
 a personal token is also saved. Session lifetime is controlled by Canvas and
@@ -111,6 +112,32 @@ executable explicitly:
 ~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas login \
   --browser /usr/bin/chromium
 ```
+
+#### Using 1Password or another password manager
+
+The isolated login window disables extensions, so password managers cannot
+fill it. To use one, enable **Use a password manager when signing in** in the
+widget settings, or pass `--password-manager`:
+
+```sh
+~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas login \
+  --password-manager
+```
+
+This signs in with a dedicated browser profile in
+`$XDG_DATA_HOME/omakanvas/login-profiles/<browser>/` (mode `0700`) that keeps
+extensions between logins. Install the 1Password extension in that window the
+first time. Chromium only looks for native messaging hosts inside the profile
+it is running, so Omakanvas copies 1Password's host registration from your
+normal Chromium-family browser configuration into the profile; the extension
+can then unlock with the 1Password desktop app. Run your normal browser's
+1Password integration setup first if no registration exists.
+
+Every extension installed in this profile can read the Canvas login pages, so
+install only extensions you trust there. Omakanvas deletes the profile's
+cookie database before each login and clears all of its cookies afterwards,
+whether the login succeeded or not, so no Canvas or SSO session remains in the
+profile. Delete the directory to remove the profile and its extensions.
 
 Right-click the Omakanvas bar icon after login to refresh immediately.
 
@@ -393,7 +420,9 @@ retrieve individual submissions or change grades. Hidden courses skip
 assignment, announcement, discussion, and conversation requests. The selected credential is read from the desktop keyring
 and is never written to Omarchy's plain-text configuration. Browser login uses
 a new private temporary browser profile with extensions disabled and no
-password-save prompts, and asks
+password-save prompts (or, when password-manager login is enabled, a dedicated
+owner-only profile that keeps extensions and has its cookies cleared after
+each login), and asks
 Chromium only for cookies
 applicable to HTTPS origins reached during login. Only a validated
 `canvas_session` value and its Canvas API base URL are retained. Assignment,

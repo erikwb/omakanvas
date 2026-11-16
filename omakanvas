@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from pathlib import Path
@@ -47,6 +48,17 @@ BROWSER_CANDIDATES = (
     "brave-browser",
     "microsoft-edge-stable",
     "vivaldi-stable",
+)
+ONEPASSWORD_NATIVE_HOST = "com.1password.1password.json"
+# Chromium reads per-user native messaging hosts from inside --user-data-dir,
+# so the 1Password extension in the login profile cannot otherwise reach the
+# desktop app. These are where 1Password registers its host for each browser.
+NATIVE_HOST_DIRECTORIES = (
+    "chromium/NativeMessagingHosts",
+    "google-chrome/NativeMessagingHosts",
+    "BraveSoftware/Brave-Browser/NativeMessagingHosts",
+    "microsoft-edge/NativeMessagingHosts",
+    "vivaldi/NativeMessagingHosts",
 )
 RECENT_ITEM_LIMIT = 3
 
@@ -596,10 +608,55 @@ class DevToolsPipe:
         self.close()
 
 
+def _private_directory(path: Path) -> None:
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise RuntimeError(f"Login profile path is not a private directory: {path}")
+    os.chmod(path, 0o700)
+
+
+def _link_password_manager(profile: Path) -> None:
+    """Copy 1Password's native messaging host into the login profile."""
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    for directory in NATIVE_HOST_DIRECTORIES:
+        source = config_home / directory / ONEPASSWORD_NATIVE_HOST
+        try:
+            manifest = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(manifest, dict) or manifest.get("name") != "com.1password.1password":
+            continue
+        hosts = profile / "NativeMessagingHosts"
+        _private_directory(hosts)
+        write_private_json(hosts / ONEPASSWORD_NATIVE_HOST, manifest)
+        return
+
+
+@contextmanager
+def _login_profile(executable: str, password_manager: bool):
+    """Yield a browser profile: temporary, or a dedicated one that keeps extensions."""
+    if not password_manager:
+        with tempfile.TemporaryDirectory(prefix="omakanvas-browser-") as directory:
+            profile = Path(directory)
+            os.chmod(profile, 0o700)
+            yield profile
+        return
+    root = data_path().parent
+    profile = root / "login-profiles" / Path(executable).name
+    for directory in (root, profile.parent, profile):
+        _private_directory(directory)
+    # Never resume a session left behind by an interrupted login.
+    for name in ("Cookies", "Cookies-journal"):
+        (profile / "Default" / name).unlink(missing_ok=True)
+    _link_password_manager(profile)
+    yield profile
+
+
 def _start_browser(
     executable: str,
     profile: Path,
     instance_url: str,
+    password_manager: bool = False,
 ) -> tuple[subprocess.Popen, DevToolsPipe]:
     command_read, parent_write = os.pipe()
     parent_read, command_write = os.pipe()
@@ -621,7 +678,7 @@ def _start_browser(
                 "--remote-debugging-pipe",
                 "--no-first-run",
                 "--no-default-browser-check",
-                "--disable-extensions",
+                *(() if password_manager else ("--disable-extensions",)),
                 "--disable-save-password-bubble",
                 "--new-window",
                 f"{instance_url}/login",
@@ -733,66 +790,72 @@ def browser_login(
     base_url: str,
     requested_browser: str = "",
     timeout: int = DEFAULT_LOGIN_TIMEOUT_SECONDS,
+    password_manager: bool = False,
 ) -> BrowserSession:
     if not 30 <= timeout <= 900:
         raise RuntimeError("Browser login timeout must be between 30 and 900 seconds")
     instance_url = normalize_instance_url(base_url)
     executable = browser_path(requested_browser)
     deadline = time.monotonic() + timeout
-    with tempfile.TemporaryDirectory(prefix="omakanvas-browser-") as directory:
-        profile = Path(directory)
-        os.chmod(profile, 0o700)
-        process, connection = _start_browser(executable, profile, instance_url)
+    with _login_profile(executable, password_manager) as profile:
+        process, connection = _start_browser(
+            executable, profile, instance_url, password_manager,
+        )
         previous_sigterm = signal.signal(signal.SIGTERM, _cancel_browser_login)
         try:
             last_validations: dict[str, tuple[str, float]] = {}
-            with connection:
-                targets = connection.command("Target.getTargets").get("targetInfos", [])
-                target_id = next(
-                    (
-                        target.get("targetId") for target in targets
-                        if isinstance(target, dict) and target.get("type") == "page"
-                    ),
-                    None,
-                )
-                if not isinstance(target_id, str) or not target_id:
-                    raise RuntimeError("Browser did not create a Canvas login page")
-                attached = connection.command(
-                    "Target.attachToTarget", {"targetId": target_id, "flatten": True},
-                )
-                session_id = attached.get("sessionId")
-                if not isinstance(session_id, str) or not session_id:
-                    raise RuntimeError("Browser could not inspect the Canvas login page")
-                while time.monotonic() < deadline:
-                    if process.poll() is not None:
-                        raise RuntimeError("The browser closed before Canvas login completed")
-                    target_infos = connection.command(
-                        "Target.getTargets"
-                    ).get("targetInfos", [])
-                    for candidate_base_url in _browser_target_origins(
-                        target_infos, instance_url,
-                    ):
-                        result = connection.command(
-                            "Network.getCookies",
-                            {"urls": [candidate_base_url]},
-                            session_id,
-                        )
-                        candidate = _canvas_session_from_cookies(
-                            result.get("cookies"), candidate_base_url,
-                        )
-                        if not candidate:
-                            continue
-                        current_time = time.monotonic()
-                        previous = last_validations.get(candidate_base_url)
-                        if previous and candidate == previous[0] and current_time - previous[1] < 2:
-                            continue
-                        last_validations[candidate_base_url] = candidate, current_time
-                        if _browser_session_is_authenticated(candidate_base_url, candidate):
-                            return BrowserSession(candidate_base_url, candidate)
-                    time.sleep(0.5)
+            targets = connection.command("Target.getTargets").get("targetInfos", [])
+            target_id = next(
+                (
+                    target.get("targetId") for target in targets
+                    if isinstance(target, dict) and target.get("type") == "page"
+                ),
+                None,
+            )
+            if not isinstance(target_id, str) or not target_id:
+                raise RuntimeError("Browser did not create a Canvas login page")
+            attached = connection.command(
+                "Target.attachToTarget", {"targetId": target_id, "flatten": True},
+            )
+            session_id = attached.get("sessionId")
+            if not isinstance(session_id, str) or not session_id:
+                raise RuntimeError("Browser could not inspect the Canvas login page")
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise RuntimeError("The browser closed before Canvas login completed")
+                target_infos = connection.command(
+                    "Target.getTargets"
+                ).get("targetInfos", [])
+                for candidate_base_url in _browser_target_origins(
+                    target_infos, instance_url,
+                ):
+                    result = connection.command(
+                        "Network.getCookies",
+                        {"urls": [candidate_base_url]},
+                        session_id,
+                    )
+                    candidate = _canvas_session_from_cookies(
+                        result.get("cookies"), candidate_base_url,
+                    )
+                    if not candidate:
+                        continue
+                    current_time = time.monotonic()
+                    previous = last_validations.get(candidate_base_url)
+                    if previous and candidate == previous[0] and current_time - previous[1] < 2:
+                        continue
+                    last_validations[candidate_base_url] = candidate, current_time
+                    if _browser_session_is_authenticated(candidate_base_url, candidate):
+                        return BrowserSession(candidate_base_url, candidate)
+                time.sleep(0.5)
             raise RuntimeError("Canvas browser login timed out")
         finally:
             signal.signal(signal.SIGTERM, previous_sigterm)
+            if password_manager:
+                # The dedicated profile outlives this login; keep no session in it.
+                try:
+                    connection.command("Storage.clearCookies")
+                except (RuntimeError, OSError):
+                    pass
             connection.close()
             _stop_browser(process)
 
@@ -1336,6 +1399,13 @@ def main() -> int:
         "--login-timeout", type=int, default=DEFAULT_LOGIN_TIMEOUT_SECONDS,
         help="seconds to wait for browser login (30-900; default: 300)",
     )
+    parser.add_argument(
+        "--password-manager", action="store_true",
+        help=(
+            "log in with a dedicated browser profile that keeps extensions such "
+            "as 1Password; its cookies are cleared after each login"
+        ),
+    )
     parser.add_argument("--course-name", default="")
     parser.add_argument("--course-code", default="")
     parser.add_argument(
@@ -1368,7 +1438,9 @@ def main() -> int:
                 f"Opening a private browser window for {base_url}.\n"
                 "Complete the Canvas login there; the window will close automatically."
             )
-            session = browser_login(base_url, args.browser, args.login_timeout)
+            session = browser_login(
+                base_url, args.browser, args.login_timeout, args.password_manager,
+            )
             save_browser_session(base_url, session.value, session.base_url)
             print(
                 "Canvas browser session saved in the system keyring for "
