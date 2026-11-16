@@ -353,13 +353,20 @@ not an archive: fetching a different Canvas installation replaces it.
 Read `roles.student.courses` and `roles.teacher.courses` for course details,
 grades or grading counts, and the complete fetched `assignments`,
 `announcements`, `discussions`, `conversations`, and `modules` lists. Announcements and
-discussion topics include full plain-text `body` fields. The existing `excerpt`
-field contains the same full text for compatibility with the widget.
-Conversations include the full latest-message text returned by Canvas in both
-`last_message` and `last_message_body`, and retain all returned participants.
-No stored text is shortened to a character limit; the panel limits preview
-lines only when displaying it. Complete message threads and discussion replies
-are not fetched. Hidden courses remain excluded from
+discussion topics include the original rich text in `body_html` and its full
+plain-text counterpart in `body`. The existing `excerpt` field contains the
+same full text for compatibility with the widget. Because Canvas's
+conversation list returns only a shortened `last_message` preview, each
+conversation's complete thread is fetched separately (without marking it as
+read): `messages` holds every message, newest first, with its full body and
+attachment metadata, and `last_message_body` holds the newest message in full.
+`last_message` keeps the list preview for the widget. If Canvas denies a
+thread or answers with an HTTP error, `fetch_error` explains why,
+`last_message_body` falls back to the preview, and the rest of the refresh
+continues. Threads whose `last_message_at` and `message_count` are unchanged
+since the previous snapshot are reused instead of downloaded again. All returned participants are retained. No stored text is shortened
+to a character limit; the panel limits preview lines only when displaying it.
+Discussion replies are not fetched. Hidden courses remain excluded from
 content fetching, and role-level permission errors remain in `roles.*.error`.
 
 Modules and their items are fetched across every API page, independently of
@@ -444,11 +451,11 @@ status, and assignments due within the selected window. Assignment data
 includes publication status and Canvas availability dates needed to display
 lock and unlock information. Omakanvas also fetches every announcement,
 discussion, and conversation for each visible course (titles/subjects, dates,
-authors or participants, full plain-text bodies, and links) for the per-course
+authors or participants, full bodies, complete conversation threads, and links) for the per-course
 screen; the panel itself shows the three most recent announcements, the three most active
 discussions, and up to three unread conversations per course. The complete
-lists, including full announcement/discussion bodies and latest conversation
-message text returned by Canvas, are included in `fetch --json` and saved in
+lists, including full announcement/discussion bodies and every conversation
+message, are included in `fetch --json` and saved in
 the owner-only local data snapshot described above. Modules, their complete item
 lists and rich-text bodies, and attached Canvas files are also fetched for each
 visible course. Original documents are cached locally. Only document downloads

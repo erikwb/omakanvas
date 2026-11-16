@@ -21,7 +21,7 @@ class FakeClient:
     base_url = "https://canvas.test/"
 
     def get_all(self, path, params=None):
-        if "/modules" in path:
+        if "/modules" in path or path == "api/v1/conversations":
             return []
         if path == "api/v1/courses":
             if params["enrollment_type"] != "student":
@@ -40,7 +40,7 @@ class AnnouncementClient:
 
     def __init__(self, topics=None, error=None, conversations=None,
                  conversation_error=None, discussions=None,
-                 discussion_error=None, enrollments=None):
+                 discussion_error=None, enrollments=None, threads=None):
         self.enrollments = enrollments if enrollments is not None else [{"type": "student"}]
         self.topics = topics if topics is not None else []
         self.error = error
@@ -48,8 +48,20 @@ class AnnouncementClient:
         self.conversation_error = conversation_error
         self.discussion_records = discussions if discussions is not None else []
         self.discussion_error = discussion_error
+        self.threads = threads if threads is not None else {}
         self.requested_paths = []
         self.requested_params = []
+
+    def get_object(self, path, params=None):
+        self.requested_paths.append(path)
+        self.requested_params.append(params)
+        conversation_id = path.removeprefix("api/v1/conversations/")
+        thread = self.threads.get(conversation_id)
+        if isinstance(thread, Exception):
+            raise thread
+        if thread is None:
+            raise module.CanvasNotFoundError("missing")
+        return thread
 
     def get_all(self, path, params=None):
         self.requested_paths.append(path)
@@ -101,7 +113,7 @@ class TeacherClient:
 
     def get_all(self, path, params=None):
         self.requests.append((path, params))
-        if "/modules" in path:
+        if "/modules" in path or path == "api/v1/conversations":
             return []
         if path == "api/v1/courses":
             if params["enrollment_type"] != "teacher":
@@ -1216,6 +1228,155 @@ class CanvasTests(unittest.TestCase):
         )
         self.assertEqual(conversation_request["filter"], "course_7")
 
+    def test_conversation_stores_full_thread_instead_of_index_preview(self):
+        full_body = "Full message line one.\n\nLine two. " + "x" * 400
+        client = AnnouncementClient(
+            conversations=[{"id": 12, "subject": "Question", "workflow_state": "unread",
+                            "last_message": full_body[:100] + "...",
+                            "last_message_at": "2026-08-25T10:00:00Z"}],
+            threads={"12": {"id": 12, "messages": [
+                {"id": 2, "created_at": "2026-08-25T10:00:00Z", "author_id": 5,
+                 "body": full_body,
+                 "attachments": [{"id": 9, "display_name": "notes.pdf",
+                                  "url": "https://files.test/signed-secret"}]},
+                {"id": 1, "created_at": "2026-08-24T10:00:00Z", "author_id": 6,
+                 "body": "Earlier message", "attachments": []},
+            ]}},
+        )
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        conversation = data["roles"]["student"]["courses"][0]["conversations"][0]
+        self.assertEqual(conversation["last_message_body"], full_body)
+        self.assertEqual([m["body"] for m in conversation["messages"]],
+                         [full_body, "Earlier message"])
+        self.assertEqual(conversation["messages"][0]["attachments"][0]["display_name"], "notes.pdf")
+        self.assertNotIn("signed-secret", json.dumps(conversation))
+        self.assertEqual(conversation["fetch_error"], "")
+        self.assertTrue(conversation["unread"])
+        thread_request = client.requested_params[
+            client.requested_paths.index("api/v1/conversations/12")
+        ]
+        self.assertEqual(thread_request, {"auto_mark_as_read": "false"})
+
+    def test_conversation_thread_failure_keeps_index_preview(self):
+        client = AnnouncementClient(
+            conversations=[{"id": 12, "subject": "Question", "workflow_state": "read",
+                            "last_message": "Preview", "last_message_at": "2026-08-25T10:00:00Z"}],
+            threads={"12": module.CanvasPermissionError("denied")},
+        )
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        conversation = data["roles"]["student"]["courses"][0]["conversations"][0]
+        self.assertEqual(conversation["last_message_body"], "Preview")
+        self.assertEqual(conversation["messages"], [])
+        self.assertEqual(conversation["fetch_error"], "denied")
+
+    def test_server_error_on_one_thread_does_not_fail_the_refresh(self):
+        client = AnnouncementClient(
+            conversations=[
+                {"id": 12, "subject": "Broken", "last_message": "Preview",
+                 "last_message_at": "2026-08-25T10:00:00Z", "message_count": 1},
+                {"id": 13, "subject": "Fine", "last_message": "Hi",
+                 "last_message_at": "2026-08-24T10:00:00Z", "message_count": 1},
+            ],
+            threads={"12": module.CanvasRequestError("Canvas API returned HTTP 500"),
+                     "13": {"messages": [{"id": 1, "body": "Hi there"}]}},
+        )
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        broken, fine = data["roles"]["student"]["courses"][0]["conversations"]
+        self.assertEqual(broken["fetch_error"], "Canvas API returned HTTP 500")
+        self.assertEqual(broken["last_message_body"], "Preview")
+        self.assertEqual(fine["last_message_body"], "Hi there")
+
+    def test_refresh_wide_failures_still_fail_the_refresh(self):
+        client = AnnouncementClient(
+            conversations=[{"id": 12, "subject": "Question", "last_message": "Preview",
+                            "last_message_at": "2026-08-25T10:00:00Z"}],
+            threads={"12": RuntimeError("Canvas refresh exceeded the total download size limit")},
+        )
+        with self.assertRaisesRegex(RuntimeError, "download size limit"):
+            module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+
+    def test_http_error_status_is_a_request_error(self):
+        for code in (429, 500, 503):
+            with self.subTest(code=code):
+                error = HTTPError("https://canvas.test/api/v1/conversations/1", code,
+                                  "failure", {}, None)
+                client = module.CanvasClient("https://canvas.test", "token",
+                                             opener=RaisingOpener(error), clock=lambda: 0)
+                with self.assertRaises(module.CanvasRequestError):
+                    client.get_object("api/v1/conversations/1")
+
+    def test_unchanged_threads_are_reused_from_the_previous_snapshot(self):
+        index = [
+            {"id": 12, "subject": "Same", "last_message": "Old",
+             "last_message_at": "2026-08-25T10:00:00Z", "message_count": 2},
+            {"id": 13, "subject": "New reply", "last_message": "Newest",
+             "last_message_at": "2026-08-26T10:00:00Z", "message_count": 3},
+        ]
+        previous = {
+            "schema_version": module.PAYLOAD_VERSION, "base_url": "https://canvas.test",
+            "roles": {"student": {"courses": [{"conversations": [
+                {"id": 12, "last_message_at": "2026-08-25T10:00:00+00:00",
+                 "message_count": 2, "fetch_error": "",
+                 "messages": [{"id": 2, "body": "Cached full body"}]},
+                {"id": 13, "last_message_at": "2026-08-25T09:00:00+00:00",
+                 "message_count": 2, "fetch_error": "",
+                 "messages": [{"id": 2, "body": "Stale"}]},
+            ]}]}},
+        }
+        client = AnnouncementClient(
+            conversations=index,
+            threads={"13": {"messages": [{"id": 3, "body": "Newest full body"}]}},
+        )
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc),
+                              previous=previous)
+        conversations = data["roles"]["student"]["courses"][0]["conversations"]
+        bodies = {item["id"]: item["last_message_body"] for item in conversations}
+        self.assertEqual(bodies, {12: "Cached full body", 13: "Newest full body"})
+        self.assertNotIn("api/v1/conversations/12", client.requested_paths)
+        self.assertIn("api/v1/conversations/13", client.requested_paths)
+
+    def test_previous_snapshot_is_ignored_when_unusable(self):
+        index = [{"id": 12, "subject": "Same", "last_message": "Old",
+                  "last_message_at": "2026-08-25T10:00:00Z", "message_count": 2}]
+        cached = {"id": 12, "last_message_at": "2026-08-25T10:00:00+00:00",
+                  "message_count": 2, "fetch_error": "",
+                  "messages": [{"id": 2, "body": "Cached"}]}
+        cases = {
+            "other installation": {"base_url": "https://other.test"},
+            "other schema": {"schema_version": module.PAYLOAD_VERSION - 1},
+            "failed before": {"conversation": {**cached, "fetch_error": "HTTP 500"}},
+        }
+        for name, change in cases.items():
+            with self.subTest(name):
+                previous = {
+                    "schema_version": change.get("schema_version", module.PAYLOAD_VERSION),
+                    "base_url": change.get("base_url", "https://canvas.test"),
+                    "roles": {"student": {"courses": [{"conversations": [
+                        change.get("conversation", cached),
+                    ]}]}},
+                }
+                client = AnnouncementClient(
+                    conversations=index,
+                    threads={"12": {"messages": [{"id": 2, "body": "Fetched"}]}},
+                )
+                data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc),
+                                      previous=previous)
+                conversation = data["roles"]["student"]["courses"][0]["conversations"][0]
+                self.assertEqual(conversation["last_message_body"], "Fetched")
+
+    def test_thread_shared_by_both_roles_is_fetched_once(self):
+        client = AnnouncementClient(
+            conversations=[{"id": 12, "subject": "Question", "last_message": "Preview",
+                            "last_message_at": "2026-08-25T10:00:00Z"}],
+            threads={"12": {"messages": [{"id": 1, "body": "Full"}]}},
+            enrollments=[{"type": "student"}, {"type": "teacher"}],
+        )
+        data = module.collect(client, 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
+        for role in ("student", "teacher"):
+            conversation = data["roles"][role]["courses"][0]["conversations"][0]
+            self.assertEqual(conversation["last_message_body"], "Full")
+        self.assertEqual(client.requested_paths.count("api/v1/conversations/12"), 1)
+
     def test_conversation_permission_failure_yields_empty_list(self):
         client = AnnouncementClient(
             conversation_error=module.CanvasPermissionError("denied"),
@@ -1360,8 +1521,10 @@ class SnapshotTests(unittest.TestCase):
         for as_json in (True, False):
             with self.subTest(as_json=as_json), TemporaryDirectory() as directory:
                 path = Path(directory) / "omakanvas/latest.json"
+                threads = {str(i): {"id": i, "messages": [{"id": 1, "body": body}]}
+                           for i in range(5)}
                 client = AnnouncementClient(topics=records, discussions=records,
-                                            conversations=conversations,
+                                            conversations=conversations, threads=threads,
                                             enrollments=[{"type": "student"}, {"type": "teacher"}])
                 status, stdout, stderr = self.fetch(client, path, as_json)
                 self.assertEqual((status, stderr), (0, ""))
@@ -1373,19 +1536,35 @@ class SnapshotTests(unittest.TestCase):
                     for field in ("announcements", "discussions", "conversations"):
                         self.assertEqual(len(course[field]), 5)
                         for item in course[field]:
-                            text_fields = (
-                                ("last_message", "last_message_body")
-                                if field == "conversations" else ("excerpt", "body")
-                            )
-                            for text_field in text_fields:
-                                self.assertEqual(item[text_field], body.strip())
                             if field == "conversations":
+                                self.assertEqual(item["last_message"], body.strip())
+                                self.assertEqual(item["last_message_body"], body)
                                 self.assertEqual(item["participants"], participants)
+                                self.assertEqual(item["messages"][0]["body"], body)
+                            else:
+                                self.assertEqual(item["excerpt"], body.strip())
+                                self.assertEqual(item["body"], body.strip())
+                                self.assertEqual(item["body_html"], f"<p>{body}</p>")
                 self.assertNotIn("secret-not-for-the-snapshot", path.read_text())
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
                 self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
                 if as_json:
                     self.assertEqual(json.loads(stdout), data)
+
+    def test_fetch_reuses_threads_from_the_saved_snapshot(self):
+        conversations = [{"id": 1, "subject": "Thread", "workflow_state": "read",
+                          "last_message": "Preview", "message_count": 1,
+                          "last_message_at": "2026-08-25T10:00:00Z"}]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "omakanvas/latest.json"
+            first = AnnouncementClient(conversations=conversations,
+                                       threads={"1": {"messages": [{"id": 1, "body": "Full"}]}})
+            self.assertEqual(self.fetch(first, path)[0], 0)
+            second = AnnouncementClient(conversations=conversations)
+            self.assertEqual(self.fetch(second, path)[0], 0)
+            self.assertNotIn("api/v1/conversations/1", second.requested_paths)
+            course = json.loads(path.read_text())["roles"]["student"]["courses"][0]
+            self.assertEqual(course["conversations"][0]["last_message_body"], "Full")
 
     def test_failed_fetch_keeps_the_previous_snapshot(self):
         with TemporaryDirectory() as directory:
