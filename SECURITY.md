@@ -52,13 +52,19 @@ Service keyring entries and sends them only to the user-configured Canvas
 installation. Browser login uses a private temporary Chromium profile, a
 process-private debugging pipe, and retains only the validated Canvas session
 value and API base URL.
-Fetched course data, including grades, announcement/discussion bodies, and
-latest conversation messages, is saved separately in
+Fetched course data, including grades, announcement/discussion bodies,
+latest conversation messages, and module bodies, is saved separately in
 `$XDG_DATA_HOME/omakanvas/latest.json` (defaulting to
 `~/.local/share/omakanvas/latest.json`). The directory uses mode `0700` and
 the file uses `0600`; it contains no authentication credentials. Other programs
 running as the same user can read this snapshot. It remains after plugin
-removal until the user deletes the data directory.
+removal until the user deletes the data directory. Attached module documents
+are saved in the sibling `documents/` directory with the same private modes.
+Original document bytes are downloaded without executing their content.
+Document downloads may follow HTTPS redirects to Canvas file-storage hosts;
+Canvas authorization headers and session cookies are stripped before a
+request leaves the Canvas origin. Signed download URLs are not saved in the
+document metadata. API requests and pagination still require the Canvas origin.
 Because Omarchy plugins run as unsandboxed user code, users should review plugin
 source and updates before installing them.
 
