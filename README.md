@@ -22,7 +22,7 @@ The panel provides three views:
 
 - **Overview** — assignment and course summaries, plus grades or grading counts.
 - **Assignments** — student work or teaching deadlines during the configured window.
-- **Courses** — per-course details, assignments, recent announcements, discussions, unread messages, links, and visibility controls.
+- **Courses** — per-course details, assignments, recent announcements, discussions, unread messages, expandable modules, downloaded documents, links, and visibility controls.
 
 ## Requirements
 
@@ -345,14 +345,14 @@ accessing credentials:
 ~/.config/omarchy/plugins/io.github.erikwb.omakanvas/omakanvas data-path
 ```
 
-The snapshot uses the same format as `fetch --json`. Its `schema_version`,
+The snapshot uses the same format as `fetch --json` (currently schema version 6). Its `schema_version`,
 `base_url`, `fetched_at`, and `days` identify the format, Canvas installation,
 refresh time, and assignment window. This is the latest successful fetch,
 not an archive: fetching a different Canvas installation replaces it.
 
 Read `roles.student.courses` and `roles.teacher.courses` for course details,
 grades or grading counts, and the complete fetched `assignments`,
-`announcements`, `discussions`, and `conversations` lists. Announcements and
+`announcements`, `discussions`, `conversations`, and `modules` lists. Announcements and
 discussion topics include full plain-text `body` fields. The existing `excerpt`
 field contains the same full text for compatibility with the widget.
 Conversations include the full latest-message text returned by Canvas in both
@@ -362,6 +362,37 @@ lines only when displaying it. Complete message threads and discussion replies
 are not fetched. Hidden courses remain excluded from
 content fetching, and role-level permission errors remain in `roles.*.error`.
 
+Modules and their items are fetched across every API page, independently of
+the upcoming assignment window. Each module retains its order, completion
+requirements, lock information, and full `items` list. Page, assignment,
+discussion, and quiz items include the complete returned rich text in
+`body_html` and its plain-text counterpart in `body`. The Courses panel lets
+you expand each module to see all items and full bodies without preview limits.
+External websites and external tools remain links; their content is not crawled.
+
+File items and Canvas files attached to or embedded in those item bodies are
+downloaded in their original format under:
+
+```text
+~/.local/share/omakanvas/documents/
+```
+
+This directory also follows `XDG_DATA_HOME`. Each item's `documents` array
+records the original filename, size, content type, `download_status`,
+`local_path`, `local_url`, and SHA-256 checksum. Click a downloaded document
+in the panel to open the local copy. PDFs, Office documents, and other files
+retain their original bytes; they are not converted into text excerpts.
+Storage paths are scoped to the Canvas installation and file ID, with a
+checksum-based filename. Unchanged documents are verified and reused on later
+refreshes. New versions keep the old copy so existing snapshot paths stay valid.
+Cached documents remain until the user removes the data directory.
+
+Locked or inaccessible content is explicitly recorded in `fetch_error` on the
+module, item, or document; a course-wide module failure uses `modules_error`.
+Unavailable documents have no local path. Authentication failures, network
+errors, and incomplete downloads fail the refresh and preserve the previous
+snapshot. Partial files are removed and never published as complete documents.
+
 Writes replace the file atomically, so readers never see partial JSON. Failed
 fetches leave the previous snapshot intact. Each refresh allows up to 50 MiB of
 downloaded API response bodies across all pages, courses, and roles, with an
@@ -369,7 +400,10 @@ downloaded API response bodies across all pages, courses, and roles, with an
 in UTF-8 bytes including formatting. Exceeding either size cap, pagination
 limits, or duration limits fails the refresh with an error instead of saving
 truncated results. JSON is written incrementally to a temporary file and only
-published after the complete snapshot fits. These are data size limits;
+published after the complete snapshot fits. Document bytes are streamed to disk
+outside those JSON size budgets, with no file-size truncation; their size is
+checked against Canvas metadata and the HTTP response. The overall refresh
+deadline is 15 minutes. These are data size limits;
 in-memory objects can use more space. Check `fetched_at` before relying on
 freshness. The directory is owner-only (`0700`) and the JSON file is
 owner-readable/writable (`0600`). Credentials are not included. Course text is
@@ -415,9 +449,13 @@ screen; the panel itself shows the three most recent announcements, the three mo
 discussions, and up to three unread conversations per course. The complete
 lists, including full announcement/discussion bodies and latest conversation
 message text returned by Canvas, are included in `fetch --json` and saved in
-the owner-only local data snapshot described above. Teacher data is read-only; Omakanvas does not
+the owner-only local data snapshot described above. Modules, their complete item
+lists and rich-text bodies, and attached Canvas files are also fetched for each
+visible course. Original documents are cached locally. Only document downloads
+may follow HTTPS redirects to external file-storage hosts, without forwarding
+Canvas credentials. Teacher data is read-only; Omakanvas does not
 retrieve individual submissions or change grades. Hidden courses skip
-assignment, announcement, discussion, and conversation requests. The selected credential is read from the desktop keyring
+assignment, announcement, discussion, conversation, module, and document requests. The selected credential is read from the desktop keyring
 and is never written to Omarchy's plain-text configuration. Browser login uses
 a new private temporary browser profile with extensions disabled and no
 password-save prompts (or, when password-manager login is enabled, a dedicated
@@ -435,6 +473,11 @@ Review third-party plugin source before installation.
 
 ## Troubleshooting
 
+- **“Canvas returned data the bar could not read” after a local plugin update** —
+  the running shell may still have the previous QML component cached. Run
+  `omarchy restart shell` to load the updated widget. The bar briefly restarts;
+  cached documents remain intact. Check the running widget's schema, refresh
+  state, and error with `omarchy-shell io.github.erikwb.omakanvas status`.
 - **“Set your Canvas URL”** — configure `baseUrl` with the `omarchy bar set`
   command above.
 - **“No Canvas credential is saved”** — select **Sign in with Canvas** in the

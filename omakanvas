@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -18,10 +19,12 @@ import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from html import unescape
+from html.parser import HTMLParser
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, NamedTuple
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin, urlparse
+from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -29,7 +32,7 @@ PLUGIN_ID = "io.github.erikwb.omakanvas"
 SERVICE = "omakanvas"
 BROWSER_SESSION_SERVICE = "omakanvas-browser-session"
 BROWSER_SESSION_VERSION = 1
-PAYLOAD_VERSION = 5
+PAYLOAD_VERSION = 6
 VISIBILITY_VERSION = 1
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
@@ -37,7 +40,8 @@ MAX_SNAPSHOT_BYTES = 50 * 1024 * 1024
 MAX_DEVTOOLS_MESSAGE_BYTES = 8 * 1024 * 1024
 MAX_PAGES = 200
 MAX_RECORDS = 20_000
-MAX_FETCH_SECONDS = 180
+MAX_FETCH_SECONDS = 900
+DOCUMENT_CHUNK_BYTES = 1024 * 1024
 REQUEST_TIMEOUT_SECONDS = 20
 DEFAULT_LOGIN_TIMEOUT_SECONDS = 300
 BROWSER_CANDIDATES = (
@@ -73,6 +77,10 @@ class CanvasAuthenticationError(RuntimeError):
 
 class CanvasPermissionError(RuntimeError):
     """Raised when a valid credential cannot access a Canvas resource."""
+
+
+class CanvasNotFoundError(RuntimeError):
+    """Raised when Canvas no longer exposes a referenced resource."""
 
 
 class BrowserSession(NamedTuple):
@@ -116,6 +124,20 @@ class SameOriginRedirectHandler(HTTPRedirectHandler):
         target = urljoin(request.full_url, new_url)
         _require_same_origin(self.base_url, target)
         return super().redirect_request(request, fp, code, message, headers, target)
+
+
+class DocumentRedirectHandler(HTTPRedirectHandler):
+    """Allow HTTPS file storage redirects without forwarding Canvas credentials."""
+
+    def redirect_request(self, request, fp, code, message, headers, new_url):
+        target = urljoin(request.full_url, new_url)
+        target_origin = _url_origin(target)
+        redirected = super().redirect_request(request, fp, code, message, headers, target)
+        if redirected is not None and _url_origin(request.full_url) != target_origin:
+            for key in list(redirected.headers) + list(redirected.unredirected_hdrs):
+                if key.lower() in {"authorization", "cookie", "proxy-authorization"}:
+                    redirected.remove_header(key)
+        return redirected
 
 
 def visibility_path() -> Path:
@@ -870,6 +892,7 @@ class CanvasClient:
         *,
         browser_session: str | None = None,
         login_base_url: str | None = None,
+        document_opener=None,
     ):
         if bool(token) == bool(browser_session):
             raise RuntimeError("Exactly one Canvas credential is required")
@@ -884,6 +907,7 @@ class CanvasClient:
             self.auth_kind = "token"
             self.auth_headers = {"Authorization": f"Bearer {token}"}
         self.opener = opener or build_opener(SameOriginRedirectHandler(self.base_url))
+        self.document_opener = document_opener or build_opener(DocumentRedirectHandler())
         self.clock = clock or time.monotonic
         self.deadline = self.clock() + MAX_FETCH_SECONDS
         self.downloaded_bytes = 0
@@ -935,6 +959,8 @@ class CanvasClient:
                 raise CanvasPermissionError(
                     "Canvas denied access to data for this role"
                 ) from error
+            if error.code == 404:
+                raise CanvasNotFoundError("Canvas resource was not found") from error
             raise RuntimeError(f"Canvas API returned HTTP {error.code}") from error
         except (URLError, TimeoutError, UnicodeDecodeError) as error:
             raise RuntimeError(f"Could not reach Canvas: {error}") from error
@@ -968,6 +994,101 @@ class CanvasClient:
             next_link = _next_link(headers.get("Link"))
             url = _require_same_origin(self.base_url, urljoin(url, next_link)) if next_link else None
         return records
+
+    def download_document(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        """Cache the original bytes, publishing a path only after a complete download."""
+        file_id = canvas_id(metadata.get("id"))
+        origin_key = hashlib.sha256(self.base_url.encode()).hexdigest()
+        directory = data_path().parent / "documents" / origin_key / file_id
+        # Every level is private, including on an existing installation.
+        for parent in (data_path().parent, directory.parent.parent, directory.parent, directory):
+            parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(parent, 0o700)
+        version = {key: metadata.get(key) for key in (
+            "id", "updated_at", "modified_at", "size", "filename", "content-type",
+        )}
+        cache_path = directory / "cache.json"
+        if metadata.get("updated_at") or metadata.get("modified_at"):
+            try:
+                cached = json.loads(cache_path.read_text(encoding="utf-8"))
+                name = cached.get("name", "")
+                if (cached.get("version") == version
+                        and re.fullmatch(r"[a-f0-9]{64}(?:\.[a-zA-Z0-9]{1,16})?", name)):
+                    local_path = directory / name
+                    if not local_path.is_symlink():
+                        with local_path.open("rb") as source:
+                            digest = hashlib.sha256()
+                            size = 0
+                            while chunk := source.read(DOCUMENT_CHUNK_BYTES):
+                                self._request_timeout()
+                                digest.update(chunk)
+                                size += len(chunk)
+                        if size == cached.get("size") and digest.hexdigest() == cached.get("sha256"):
+                            os.chmod(local_path, 0o600)
+                            return document_location(local_path, size, digest.hexdigest())
+            except (OSError, ValueError, AttributeError, TypeError):
+                pass
+
+        url = metadata.get("url")
+        if not isinstance(url, str) or not url:
+            raise RuntimeError(f"Canvas file {file_id} has no download URL")
+        url = urljoin(self.base_url, url)
+        origin = _url_origin(url)
+        headers = {"Accept-Encoding": "identity"}
+        if origin == _url_origin(self.base_url):
+            headers.update(self.auth_headers)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=".download-", suffix=".tmp", dir=directory)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                with self.document_opener.open(
+                    Request(url, headers=headers), timeout=self._request_timeout(),
+                ) as response:
+                    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                        raise RuntimeError(f"Canvas file {file_id} returned an unexpected content encoding")
+                    digest = hashlib.sha256()
+                    size = 0
+                    while chunk := response.read(DOCUMENT_CHUNK_BYTES):
+                        self._request_timeout()
+                        output.write(chunk)
+                        digest.update(chunk)
+                        size += len(chunk)
+                    expected = metadata.get("size")
+                    content_length = response.headers.get("Content-Length")
+                    if content_length is not None:
+                        try:
+                            content_length = int(content_length)
+                        except ValueError as error:
+                            raise RuntimeError(f"Canvas file {file_id} returned an invalid size") from error
+                        if size != content_length:
+                            raise RuntimeError(f"Canvas file {file_id} download was incomplete")
+                    if isinstance(expected, int) and not isinstance(expected, bool) and size != expected:
+                        raise RuntimeError(f"Canvas file {file_id} did not match its expected size")
+                output.flush()
+                os.fsync(output.fileno())
+            checksum = digest.hexdigest()
+            suffix = Path(str(metadata.get("filename") or "")).suffix
+            if not re.fullmatch(r"\.[a-zA-Z0-9]{1,16}", suffix):
+                suffix = ""
+            local_path = directory / (checksum + suffix)
+            os.replace(temporary, local_path)
+            write_private_json(cache_path, {
+                "version": version, "name": local_path.name, "size": size, "sha256": checksum,
+            })
+            return document_location(local_path, size, checksum)
+        except HTTPError as error:
+            if error.code == 401 and _url_origin(error.url) == _url_origin(self.base_url):
+                raise self._authentication_error() from error
+            if error.code in {403, 404}:
+                raise CanvasPermissionError(
+                    f"Canvas file {file_id} is unavailable (HTTP {error.code})"
+                ) from error
+            raise RuntimeError(f"Canvas file {file_id} download returned HTTP {error.code}") from error
+        except (URLError, TimeoutError, HTTPException) as error:
+            # Signed storage URLs can contain secrets; do not print exception URLs.
+            raise RuntimeError(f"Could not download Canvas file {file_id}") from error
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _next_link(header: str | None) -> str | None:
@@ -1032,6 +1153,172 @@ def assignment_schedules(
 
 def plain_text(value: Any) -> str:
     return sanitize_text(re.sub(r"<[^<>]*>", " ", str(value or "")))
+
+
+def canvas_id(value: Any) -> str:
+    if isinstance(value, bool) or not re.fullmatch(r"[0-9]+", str(value)):
+        raise RuntimeError("Canvas returned an invalid resource ID")
+    return str(value)
+
+
+def document_location(path: Path, size: int, checksum: str) -> dict[str, Any]:
+    return {
+        "local_path": str(path), "local_url": path.as_uri(),
+        "downloaded_size": size, "sha256": checksum, "download_status": "downloaded",
+    }
+
+
+class CanvasFileReferences(HTMLParser):
+    """Find Canvas attachments in rich text without following arbitrary web links."""
+
+    def __init__(self, base_url: str):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.file_ids: dict[str, None] = {}
+
+    def handle_starttag(self, tag, attrs):
+        for name, value in attrs:
+            if name not in {"href", "src", "data-api-endpoint", "data"} or not value:
+                continue
+            url = validated_canvas_web_url(self.base_url, value)
+            if not url:
+                continue
+            match = re.fullmatch(
+                r"/(?:api/v1/)?(?:(?:courses|groups|users)/[0-9]+/)?files/([0-9]+)(?:/.*)?",
+                unquote(urlparse(url).path),
+            )
+            if match:
+                self.file_ids[match.group(1)] = None
+
+
+class ModuleCollector:
+    """Collect complete module lists, rich text, and original attached files."""
+
+    def __init__(self, client: CanvasClient):
+        self.client = client
+        self.courses: dict[str, tuple[list[dict[str, Any]], str]] = {}
+        self.contents: dict[str, dict[str, Any]] = {}
+        self.documents: dict[str, dict[str, Any]] = {}
+
+    def document(self, file_id: Any) -> dict[str, Any]:
+        key = canvas_id(file_id)
+        if key in self.documents:
+            return self.documents[key]
+        document: dict[str, Any] = {
+            "id": int(key), "display_name": f"File {key}",
+            "html_url": validated_canvas_web_url(self.client.base_url, f"/files/{key}"),
+            "local_path": None, "local_url": None, "sha256": None,
+            "download_status": "unavailable", "fetch_error": "",
+        }
+        try:
+            metadata = self.client.get_object(f"api/v1/files/{key}")
+            if canvas_id(metadata.get("id")) != key:
+                raise RuntimeError("Canvas returned the wrong file metadata")
+            # Do not persist expiring signed download/preview URLs.
+            document.update({field: metadata.get(field) for field in (
+                "filename", "content-type", "size", "created_at", "updated_at", "modified_at",
+                "locked_for_user", "hidden_for_user", "unlock_at", "lock_at", "lock_explanation",
+            )})
+            document["display_name"] = sanitize_text(
+                metadata.get("display_name") or metadata.get("filename"), f"File {key}",
+            )
+            if metadata.get("locked_for_user") or metadata.get("hidden_for_user"):
+                document["download_status"] = "locked"
+                document["fetch_error"] = plain_text(metadata.get("lock_explanation")) or "File is locked in Canvas"
+            else:
+                document.update(self.client.download_document(metadata))
+        except (CanvasPermissionError, CanvasNotFoundError) as error:
+            document["fetch_error"] = str(error)
+        self.documents[key] = document
+        return document
+
+    def item(self, course_id: str, source: dict[str, Any]) -> dict[str, Any]:
+        item = {
+            **source, "body": "", "body_html": "", "documents": [], "fetch_error": "",
+            "html_url": validated_canvas_web_url(self.client.base_url, source.get("html_url")),
+        }
+        item["title"] = sanitize_text(source.get("title"), "Untitled module item")
+        kind = source.get("type")
+        if kind == "File":
+            item["documents"] = [self.document(source.get("content_id"))]
+            return item
+        if kind not in {"Page", "Assignment", "Discussion", "Quiz"}:
+            # Subheaders have no body. External links/tools remain links; we do
+            # not crawl third-party sites or launch tools during a refresh.
+            return item
+        details = source.get("content_details") or {}
+        if details.get("locked_for_user"):
+            item["fetch_error"] = plain_text(details.get("lock_explanation")) or "Content is locked in Canvas"
+            return item
+        if kind == "Page":
+            page = source.get("page_url") or source.get("content_id")
+            if not page:
+                raise RuntimeError("Canvas module page has no page URL or ID")
+            endpoint = f"pages/{quote(str(page), safe='')}"
+        else:
+            resource = {"Assignment": "assignments", "Discussion": "discussion_topics", "Quiz": "quizzes"}[kind]
+            endpoint = f"{resource}/{canvas_id(source.get('content_id'))}"
+        path = f"api/v1/courses/{course_id}/{endpoint}"
+        try:
+            if path not in self.contents:
+                self.contents[path] = self.client.get_object(path)
+            content = self.contents[path]
+        except (CanvasPermissionError, CanvasNotFoundError) as error:
+            item["fetch_error"] = str(error)
+            return item
+        field = {"Page": "body", "Assignment": "description", "Discussion": "message", "Quiz": "description"}[kind]
+        body = content.get(field) or ""
+        item["body_html"] = str(body)
+        item["body"] = plain_text(body)
+        if content.get("locked_for_user"):
+            item["fetch_error"] = plain_text(content.get("lock_explanation")) or "Content is locked in Canvas"
+        references = CanvasFileReferences(self.client.base_url)
+        references.feed(item["body_html"])
+        references.close()
+        attachment_ids = dict(references.file_ids)
+        attachments = list(content.get("attachments") or [])
+        if isinstance(content.get("attachment"), dict):
+            attachments.append(content["attachment"])
+        for attachment in attachments:
+            if isinstance(attachment, dict) and attachment.get("id") is not None:
+                attachment_ids[canvas_id(attachment["id"])] = None
+        item["documents"] = [self.document(file_id) for file_id in attachment_ids]
+        return item
+
+    def collect(self, course_id: Any) -> tuple[list[dict[str, Any]], str]:
+        key = canvas_id(course_id)
+        if key in self.courses:
+            return self.courses[key]
+        try:
+            records = self.client.get_all(f"api/v1/courses/{key}/modules", {"per_page": 100})
+        except (CanvasPermissionError, CanvasNotFoundError) as error:
+            self.courses[key] = ([], str(error))
+            return self.courses[key]
+        modules = []
+        for source in records:
+            module_id = canvas_id(source.get("id"))
+            record = {
+                **source, "name": sanitize_text(source.get("name"), "Untitled module"),
+                "items": [], "fetch_error": "",
+                "html_url": validated_canvas_web_url(
+                    self.client.base_url, f"/courses/{key}/modules/{module_id}",
+                ),
+            }
+            try:
+                # Always paginate the dedicated endpoint: Canvas may omit or
+                # limit inline items even when include[]=items was requested.
+                items = self.client.get_all(
+                    f"api/v1/courses/{key}/modules/{module_id}/items",
+                    {"include[]": ["content_details"], "per_page": 100},
+                )
+                record["items"] = [self.item(key, item) for item in items]
+                record["items"].sort(key=lambda item: item.get("position") or 0)
+            except (CanvasPermissionError, CanvasNotFoundError) as error:
+                record["fetch_error"] = str(error)
+            modules.append(record)
+        modules.sort(key=lambda record: record.get("position") or 0)
+        self.courses[key] = (modules, "")
+        return self.courses[key]
 
 
 def collect_announcements(
@@ -1205,12 +1492,14 @@ def collect_role(
     days: int = 14,
     now: datetime | None = None,
     hidden_course_ids: set[str] | None = None,
+    module_collector: ModuleCollector | None = None,
 ) -> dict[str, Any]:
     if role not in {"student", "teacher"}:
         raise ValueError(f"Unsupported Canvas role: {role}")
     now = now or datetime.now(timezone.utc)
     cutoff = now + timedelta(days=days)
     hidden_course_ids = hidden_course_ids or set()
+    module_collector = module_collector or ModuleCollector(client)
     include = "total_scores" if role == "student" else "needs_grading_count"
     courses = client.get_all("api/v1/courses", {
         "enrollment_state": "active", "enrollment_type": role,
@@ -1274,6 +1563,7 @@ def collect_role(
         announcements = collect_announcements(client, course["id"])
         conversations = collect_conversations(client, course["id"])
         discussions = collect_discussions(client, course["id"])
+        modules, modules_error = module_collector.collect(course["id"])
         current_score = enrollment.get("computed_current_score") if enrollment else None
         current_grade = enrollment.get("computed_current_grade") if enrollment else None
         current_grade = (
@@ -1294,6 +1584,8 @@ def collect_role(
             "announcements": announcements,
             "conversations": conversations,
             "discussions": discussions,
+            "modules": modules,
+            "modules_error": modules_error,
         })
     result_courses.sort(key=lambda item: item["name"].lower())
     hidden_courses.sort(key=lambda item: item["name"].lower())
@@ -1313,10 +1605,11 @@ def collect(
 ) -> dict[str, Any]:
     now = now or datetime.now(timezone.utc)
     roles = {}
+    module_collector = ModuleCollector(client)
     for role in ("student", "teacher"):
         try:
             roles[role] = collect_role(
-                client, role, days, now, hidden_course_ids,
+                client, role, days, now, hidden_course_ids, module_collector,
             )
         except CanvasPermissionError as error:
             roles[role] = empty_role_payload(str(error))
@@ -1369,6 +1662,19 @@ def print_terminal(data: dict[str, Any]) -> None:
             for discussion in (course.get("discussions") or [])[:RECENT_ITEM_LIMIT]:
                 active = (discussion.get("last_activity_at") or "")[:10] or "no date"
                 print(f"  [discuss  ] {active}  {discussion.get('title', 'Untitled discussion')}")
+            if course.get("modules_error"):
+                print(f"  [modules ] {course['modules_error']}")
+            for record in course.get("modules") or []:
+                print(f"  [module  ] {record['name']}")
+                if record["fetch_error"]:
+                    print(f"    {record['fetch_error']}")
+                for item in record["items"]:
+                    print(f"    [{item.get('type', 'item')}] {item['title']}")
+                    if item["fetch_error"]:
+                        print(f"      {item['fetch_error']}")
+                    for document in item["documents"]:
+                        location = document["local_path"] or document["fetch_error"]
+                        print(f"      {document['display_name']}: {location}")
 
 
 def main() -> int:

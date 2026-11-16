@@ -21,6 +21,8 @@ class FakeClient:
     base_url = "https://canvas.test/"
 
     def get_all(self, path, params=None):
+        if "/modules" in path:
+            return []
         if path == "api/v1/courses":
             if params["enrollment_type"] != "student":
                 return []
@@ -99,6 +101,8 @@ class TeacherClient:
 
     def get_all(self, path, params=None):
         self.requests.append((path, params))
+        if "/modules" in path:
+            return []
         if path == "api/v1/courses":
             if params["enrollment_type"] != "teacher":
                 return []
@@ -826,7 +830,7 @@ class CanvasTests(unittest.TestCase):
     def test_collects_only_assignments_in_window(self):
         data = module.collect(FakeClient(), 14, datetime(2026, 8, 27, tzinfo=timezone.utc))
         student = data["roles"]["student"]
-        self.assertEqual(data["schema_version"], 5)
+        self.assertEqual(data["schema_version"], 6)
         self.assertEqual(len(student["courses"]), 1)
         self.assertEqual([a["name"] for a in student["courses"][0]["assignments"]], ["In range"])
         self.assertEqual(

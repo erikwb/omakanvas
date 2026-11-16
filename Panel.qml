@@ -30,7 +30,7 @@ Panel {
   property bool cursorActive: false
   property string selectedCourseId: ""
   property var payload: ({
-    schema_version: 5,
+    schema_version: 6,
     fetched_at: "",
     days: 14,
     roles: {
@@ -91,6 +91,8 @@ Panel {
     ? (selectedCourse.discussions || []) : []
   readonly property var selectedCourseRecentDiscussions:
     selectedCourseDiscussions.slice(0, 3)
+  readonly property var selectedCourseModules: selectedCourse
+    ? (selectedCourse.modules || []) : []
   readonly property var nextAssignment: teaching
     ? (assignments.length > 0 ? assignments[0] : null)
     : (openAssignments.length > 0 ? openAssignments[0] : null)
@@ -495,8 +497,9 @@ Panel {
       }
       try {
         var nextPayload = JSON.parse(String(statusOutput.text || ""))
-        if (Number(nextPayload.schema_version) !== 5 || !nextPayload.roles)
-          throw new Error("Unsupported Omakanvas data format")
+        if (Number(nextPayload.schema_version) !== 6 || !nextPayload.roles)
+          throw new Error("Unsupported Omakanvas data format: expected version 6, received "
+            + String(nextPayload.schema_version))
         root.payload = nextPayload
         root.ensureSelectedRole()
         root.ensureSelectedCourse()
@@ -504,6 +507,7 @@ Panel {
         root.authError = false
       } catch (error) {
         root.errorText = "Canvas returned data the bar could not read."
+        console.warn("Omakanvas could not read helper output:", String(error))
       }
       if (root.refreshAfterStatus) {
         root.refreshAfterStatus = false
@@ -620,6 +624,15 @@ Panel {
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
     function refresh(): string { root.refreshNow(); return "ok" }
+    function status(): string {
+      return JSON.stringify({
+        schema_version: root.payload.schema_version,
+        loading: root.loading,
+        error: root.errorText,
+        fetched_at: root.payload.fetched_at,
+        courses: root.courses.length
+      })
+    }
     function nextPane(): string { root.selectPane(root.selectedPane + 1); return root.paneNames[root.selectedPane] }
   }
 
@@ -1578,6 +1591,39 @@ Panel {
               }
             }
 
+            PanelSectionHeader {
+              visible: !!root.selectedCourse
+              text: "MODULES · " + root.selectedCourseModules.length
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              topPadding: Math.ceil(fontSize * 0.15) + Style.space(4)
+            }
+
+            Text {
+              visible: !!root.selectedCourse && root.selectedCourseModules.length === 0
+              width: parent.width
+              text: String((root.selectedCourse || {}).modules_error || "No modules available.")
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.Wrap
+            }
+
+            Repeater {
+              model: root.selectedCourseModules
+              ModuleCard {
+                required property var modelData
+                width: coursesPane.width
+                moduleData: modelData
+                foreground: root.foreground
+                muted: root.dim
+                accent: root.urgent
+                fontFamily: root.fontFamily
+                onOpenItem: function(item) { root.openAssignment(item) }
+              }
+            }
+
             Button {
               visible: root.hiddenCourses.length > 0
               width: parent.width
@@ -1597,7 +1643,7 @@ Panel {
             Text {
               visible: root.hiddenCoursesExpanded && root.hiddenCourses.length > 0
               width: parent.width
-              text: "Hidden courses are excluded from assignments, announcements, discussions, messages, counts, alerts, and assignment API requests."
+              text: "Hidden courses are excluded from assignments, announcements, discussions, messages, modules, document downloads, counts, and alerts."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
